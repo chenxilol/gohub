@@ -1,0 +1,14 @@
+server:
+  addr: ":8080"                       # 服务监听地址
+  read_timeout: 3m                    # 读取超时
+  write_timeout: 3m                   # 写入超时
+  read_buffer_size: 4096              # 读缓冲区大小(bytes)
+  write_buffer_size: 4096             # 写缓冲区大小(bytes)
+  message_buffer_cap: 256             # 消息缓冲队列容量
+
+cluster:
+  enabled: false                      # 是否启用集群模式
+  etcd:                               # etcd配置
+    endpoints: ["http://etcd:2379"]   # etcd节点地址
+    dial_timeout: 5s                  # 连接超时
+    key_prefix: "/gohub"              # 键前缀 

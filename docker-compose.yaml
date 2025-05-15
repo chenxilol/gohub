@@ -1,0 +1,42 @@
+version: '3'
+
+services:
+  etcd:
+    image: bitnami/etcd:latest
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - etcd_data:/bitnami/etcd
+
+  gohub1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      - etcd
+    environment:
+      - CLUSTER_ENABLED=false
+      - SERVER_ADDR=:8080
+
+  gohub2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    depends_on:
+      - etcd
+    environment:
+      - CLUSTER_ENABLED=true
+      - SERVER_ADDR=:8080
+      - CLUSTER_ETCD_ENDPOINTS=http://etcd:2379
+
+volumes:
+  etcd_data:
+    driver: local 
