@@ -7,7 +7,7 @@ server:
   message_buffer_cap: 256             # 消息缓冲队列容量
 
 cluster:
-  enabled: false                      # 是否启用集群模式
+  enabled: true                      # 是否启用集群模式
   etcd:                               # etcd配置
     endpoints: ["http://etcd:2379"]   # etcd节点地址
     dial_timeout: 5s                  # 连接超时

@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
-	"github.com/spf13/viper"
 	"gohub/internal/bus"
 	"gohub/internal/dispatcher"
 	"gohub/internal/handlers"
@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/spf13/viper"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -109,7 +111,7 @@ func main() {
 		wsConn := myws.NewGorillaConn(conn)
 		client := hub2.NewClient(ctx, clientID, wsConn, hubConfig, func(id string) {
 			wsHub.Unregister(id)
-		})
+		}, d)
 
 		// 注册到Hub
 		wsHub.Register(client)
@@ -149,7 +151,7 @@ func main() {
 
 	// 启动服务器
 	slog.Info("Starting server", "addr", config.Server.Addr, "cluster_mode", config.Cluster.Enabled)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("HTTP server error", "error", err)
 	}
 

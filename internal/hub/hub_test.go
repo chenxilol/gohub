@@ -210,7 +210,8 @@ func TestHub_Broadcast_SingleNode(t *testing.T) {
 			fmt.Sprintf("client%d", i+1),
 			mockConns[i],
 			cfg,
-			hub.Unregister)
+			hub.Unregister,
+			nil)
 		hub.Register(clients[i])
 	}
 
@@ -257,7 +258,7 @@ func TestHub_ClientTimeout(t *testing.T) {
 		readErr:     websocket.ErrReadLimit, // 模拟读取错误，触发断开
 		writtenMsgs: make([][]byte, 0),      // 确保是空的
 	}
-	client := NewClient(context.Background(), "client1", mockConn, cfg, hub.Unregister)
+	client := NewClient(context.Background(), "client1", mockConn, cfg, hub.Unregister, nil)
 	hub.Register(client)
 
 	// 确保客户端被注册
@@ -303,7 +304,7 @@ func TestHub_SendBufferFull(t *testing.T) {
 	}
 
 	clientID := "client1"
-	client := NewClient(context.Background(), clientID, mockConn, cfg, hub.Unregister)
+	client := NewClient(context.Background(), clientID, mockConn, cfg, hub.Unregister, nil)
 	hub.Register(client)
 
 	// 等待客户端goroutine启动

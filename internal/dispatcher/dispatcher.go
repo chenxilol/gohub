@@ -4,13 +4,13 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
-	hub2 "gohub/internal/hub"
+	"gohub/internal/hub"
 	"log/slog"
 	"sync"
 )
 
 // Handler 是消息处理函数类型
-type Handler func(context.Context, *hub2.Client, hub2.Message) error
+type Handler func(context.Context, *hub.Client, hub.Message) error
 
 // Dispatcher 消息分发器，根据消息ID路由到对应的处理函数
 type Dispatcher struct {
@@ -33,8 +33,8 @@ func (d *Dispatcher) Register(id int, h Handler) {
 }
 
 // DecodeAndRoute 解码消息并路由到对应的处理函数
-func (d *Dispatcher) DecodeAndRoute(ctx context.Context, c *hub2.Client, data []byte) error {
-	var m hub2.Message
+func (d *Dispatcher) DecodeAndRoute(ctx context.Context, c *hub.Client, data []byte) error {
+	var m hub.Message
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}

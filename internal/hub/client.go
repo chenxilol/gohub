@@ -18,14 +18,15 @@ var (
 
 // Client 表示一个WebSocket客户端连接
 type Client struct {
-	id      string          // 客户端唯一标识
-	conn    WSConn          // WebSocket连接
-	out     chan Frame      // 发送消息队列
-	ctx     context.Context // 上下文用于取消
-	cancel  context.CancelFunc
-	cfg     Config       // 配置选项
-	onClose func(string) // 关闭时的回调函数
-	closed  sync.Once
+	id         string          // 客户端唯一标识
+	conn       WSConn          // WebSocket连接
+	out        chan Frame      // 发送消息队列
+	ctx        context.Context // 上下文用于取消
+	cancel     context.CancelFunc
+	cfg        Config       // 配置选项
+	onClose    func(string) // 关闭时的回调函数
+	closed     sync.Once
+	dispatcher MessageDispatcher // 添加 dispatcher 接口字段
 }
 
 // WSConn 解耦WebSocket连接接口，便于测试
@@ -62,17 +63,18 @@ func DefaultConfig() Config {
 }
 
 // NewClient 创建一个新的客户端
-func NewClient(ctx context.Context, id string, conn WSConn, cfg Config, onClose func(string)) *Client {
+func NewClient(ctx context.Context, id string, conn WSConn, cfg Config, onClose func(string), dispatcher MessageDispatcher) *Client {
 	clientCtx, cancel := context.WithCancel(ctx)
 
 	client := &Client{
-		id:      id,
-		conn:    conn,
-		out:     make(chan Frame, cfg.MessageBufferCap),
-		ctx:     clientCtx,
-		cancel:  cancel,
-		cfg:     cfg,
-		onClose: onClose,
+		id:         id,
+		conn:       conn,
+		out:        make(chan Frame, cfg.MessageBufferCap),
+		ctx:        clientCtx,
+		cancel:     cancel,
+		cfg:        cfg,
+		onClose:    onClose,
+		dispatcher: dispatcher,
 	}
 
 	// 启动读写循环
@@ -128,8 +130,23 @@ func (c *Client) readLoop() {
 			continue
 		}
 
-		// 处理消息路由，这里将在后续实现
-		slog.Debug("message received", "type", msgType, "size", len(message), "client", c.id)
+		// 通常，JSON消息会以 TextMessage 类型发送
+		// 如果是二进制消息，并且您的协议支持，也可以处理
+		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
+			slog.Warn("received unexpected message type for routing", "type", msgType, "client", c.id)
+			continue
+		}
+
+		// 使用 dispatcher 处理消息
+		if c.dispatcher == nil {
+			slog.Error("dispatcher not initialized for client", "client", c.id)
+			continue
+		}
+		if err := c.dispatcher.DecodeAndRoute(c.ctx, c, message); err != nil {
+			slog.Error("failed to decode or route message", "error", err, "client", c.id)
+			// 考虑根据错误类型决定是否关闭连接
+			// 例如，如果错误是 json.Unmarshal 相关的，可能是无效的消息格式
+		}
 	}
 }
 
