@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"gohub/internal/bus"
+	"gohub/internal/bus/noop"
 	"gohub/internal/dispatcher"
 	"gohub/internal/handlers"
 	hub2 "gohub/internal/hub"
@@ -63,18 +63,9 @@ func main() {
 	// 根据配置决定是否创建消息总线
 	var messageBus hub2.MessageBus
 	if config.Cluster.Enabled {
-		slog.Info("Cluster mode enabled, connecting to etcd")
-		etcdBus, err := bus.NewEtcdBus(bus.EtcdConfig{
-			Endpoints:   config.Cluster.Etcd.Endpoints,
-			DialTimeout: config.Cluster.Etcd.DialTimeout,
-			KeyPrefix:   config.Cluster.Etcd.KeyPrefix,
-		})
-		if err != nil {
-			slog.Error("Failed to create etcd message bus", "error", err)
-			os.Exit(1)
-		}
-		messageBus = etcdBus
-		defer etcdBus.Close()
+		slog.Info("Cluster mode enabled, using message bus")
+		// 使用 noop 作为默认消息总线 (将来可替换为 Redis/NATS)
+		messageBus = noop.New()
 	}
 
 	// 创建Hub

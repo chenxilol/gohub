@@ -153,7 +153,7 @@ func TestHub_Broadcast_Cluster(t *testing.T) {
 		readMsg:     []byte("hello"),
 		writtenMsgs: make([][]byte, 0),
 	}
-	client1 := NewClient(context.Background(), "client1", mockConn1, cfg, hub1.Unregister, nil)
+	client1 := NewClient(context.Background(), "client1", mockConn1, cfg, hub1.Unregister, newMockDispatcher())
 	hub1.Register(client1)
 
 	mockConn2 := &MockWSConn{
@@ -161,7 +161,7 @@ func TestHub_Broadcast_Cluster(t *testing.T) {
 		readMsg:     []byte("hello"),
 		writtenMsgs: make([][]byte, 0),
 	}
-	client2 := NewClient(context.Background(), "client2", mockConn2, cfg, hub2.Unregister, nil)
+	client2 := NewClient(context.Background(), "client2", mockConn2, cfg, hub2.Unregister, newMockDispatcher())
 	hub2.Register(client2)
 
 	// 等待初始化和订阅完成
@@ -254,7 +254,7 @@ func TestHub_Push_AcrossNodes(t *testing.T) {
 		readMsg:     []byte("hello"),
 		writtenMsgs: make([][]byte, 0),
 	}
-	client1 := NewClient(context.Background(), "client1", mockConn1, cfg, hub1.Unregister, nil)
+	client1 := NewClient(context.Background(), "client1", mockConn1, cfg, hub1.Unregister, newMockDispatcher())
 	hub1.Register(client1)
 
 	mockConn2 := &MockWSConn{
@@ -262,7 +262,7 @@ func TestHub_Push_AcrossNodes(t *testing.T) {
 		readMsg:     []byte("hello"),
 		writtenMsgs: make([][]byte, 0),
 	}
-	client2 := NewClient(context.Background(), "client2", mockConn2, cfg, hub2.Unregister, nil)
+	client2 := NewClient(context.Background(), "client2", mockConn2, cfg, hub2.Unregister, newMockDispatcher())
 	hub2.Register(client2)
 
 	// 等待订阅完成

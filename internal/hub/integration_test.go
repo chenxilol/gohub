@@ -113,6 +113,8 @@ func (m *EnhancedMockBus) Close() error {
 	return nil
 }
 
+// mockDispatcher 和 newMockDispatcher 已在 hub_test.go 中定义，这里不再重复
+
 // 集成测试：模拟集群环境中的Hub行为
 func TestCluster_Integration(t *testing.T) {
 	// 使用更严格的隔离策略，确保测试独立性
@@ -147,7 +149,7 @@ func TestCluster_Integration(t *testing.T) {
 	// 等待一小段时间确保系统稳定，避免测试之间的干扰
 	time.Sleep(10 * time.Millisecond)
 
-	client1 := NewClient(context.Background(), "client1", mockConn1, hubCfg, hub1.Unregister, nil)
+	client1 := NewClient(context.Background(), "client1", mockConn1, hubCfg, hub1.Unregister, newMockDispatcher())
 	hub1.Register(client1)
 
 	mockConn2 := &MockWSConn{
@@ -155,7 +157,7 @@ func TestCluster_Integration(t *testing.T) {
 		readMsg:     []byte("hello"),
 		writtenMsgs: make([][]byte, 0),
 	}
-	client2 := NewClient(context.Background(), "client2", mockConn2, hubCfg, hub2.Unregister, nil)
+	client2 := NewClient(context.Background(), "client2", mockConn2, hubCfg, hub2.Unregister, newMockDispatcher())
 	hub2.Register(client2)
 
 	// 等待初始化完成

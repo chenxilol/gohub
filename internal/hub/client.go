@@ -157,12 +157,6 @@ func (c *Client) writeLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
-			// 正常关闭时发送关闭消息
-			_ = c.conn.WriteControl(
-				websocket.CloseMessage,
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
-				time.Now().Add(c.cfg.WriteTimeout),
-			)
 			return
 
 		case frame, ok := <-c.out:
