@@ -15,11 +15,28 @@ server:
 # 集群配置
 cluster:
   enabled: false                 # 是否启用集群模式
-  etcd:                          # etcd配置 (用于服务发现)
+  # etcd配置 (用于服务发现)
+  etcd:                         
     endpoints:
       - "localhost:2379"
     dial_timeout: 5s
     key_prefix: "/gohub/nodes/"
+  # NATS配置 (用于集群间通信)
+  nats:
+    urls:
+      - "nats://localhost:4222" 
+    name: "gohub-client"         # 客户端名称
+    reconnect_wait: 2s           # 重连等待时间
+    max_reconnects: -1           # 最大重连次数 (-1表示无限)
+    connect_timeout: 5s          # 连接超时
+    op_timeout: 10ms             # 操作超时
+    use_jetstream: false         # 是否使用JetStream
+    stream_name: "GOHUB"         # JetStream流名称
+    consumer_name: "gohub-consumer" # JetStream消费者名称
+    message_retention: 1h        # 消息保留时间
+    username: ""                 # NATS认证用户名 (可选)
+    password: ""                 # NATS认证密码 (可选)
+    token: ""                    # NATS认证令牌 (可选)
 
 # 认证配置
 auth:
@@ -30,20 +47,5 @@ auth:
   
 # 日志配置
 log:
-  level: "debug"                 # 日志级别: debug, info, warn, error
-  format: "json"                 # 日志格式: json, text
-
-# NATS配置 (消息总线)
-nats:
-  urls:
-    - "nats://localhost:4222" 
-  username: ""                   # NATS认证用户名 (可选)
-  password: ""                   # NATS认证密码 (可选)
-  token: ""                      # NATS认证令牌 (可选)
-  reconnect_wait: 2s             # 重连等待时间
-  max_reconnects: -1             # 最大重连次数 (-1表示无限)
-  connection_timeout: 5s         # 连接超时
-  use_jetstream: false           # 是否使用JetStream
-  stream_name: "GOHUB"           # JetStream流名称
-  consumer_name: "gohub-consumer" # JetStream消费者名称
-  message_retention: 1h          # 消息保留时间 
+  level: "info"                  # 日志级别: debug, info, warn, error
+  format: "json"                 # 日志格式: json, text 

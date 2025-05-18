@@ -173,11 +173,19 @@ func (n *NatsBus) setupJetStream() error {
 		return fmt.Errorf("failed to create JetStream context: %w", err)
 	}
 
-	// 生成唯一的主题前缀
-	uniqueSubject := fmt.Sprintf("%s.%d", n.cfg.StreamName, time.Now().UnixNano())
-	n.streamSubject = uniqueSubject
+	// 使用固定的主题前缀，而不是每次启动生成新的
+	// 这确保了服务重启后的消息连续性
+	streamSubject := n.cfg.StreamName
 
-	slog.Info("creating/checking jetstream stream", "name", n.cfg.StreamName, "subject", uniqueSubject)
+	// 添加服务名称信息以支持多个服务使用同一个NATS服务器
+	if n.cfg.Name != "" {
+		streamSubject = streamSubject + "." + n.cfg.Name
+	}
+
+	// 保存流主题前缀，用于后续发布
+	n.streamSubject = streamSubject
+
+	slog.Info("creating/checking jetstream stream", "name", n.cfg.StreamName, "subject", streamSubject)
 
 	// 检查并创建流
 	var streamInfo *nats.StreamInfo
@@ -207,7 +215,7 @@ func (n *NatsBus) setupJetStream() error {
 		// 流不存在，创建流
 		streamConfig := &nats.StreamConfig{
 			Name:         n.cfg.StreamName,
-			Subjects:     []string{uniqueSubject + ".>"}, // 使用唯一前缀捕获主题
+			Subjects:     []string{streamSubject + ".>"}, // 使用固定前缀捕获主题
 			Retention:    nats.WorkQueuePolicy,
 			MaxAge:       n.cfg.MessageRetention,
 			NoAck:        false,              // 默认需要确认
@@ -221,7 +229,7 @@ func (n *NatsBus) setupJetStream() error {
 
 		slog.Info("creating new jetstream stream",
 			"name", n.cfg.StreamName,
-			"subject", uniqueSubject,
+			"subject", streamSubject,
 			"retention", "workqueue",
 			"storage", "memory",
 			"max_age", n.cfg.MessageRetention)
@@ -247,10 +255,12 @@ func (n *NatsBus) setupJetStream() error {
 		return errors.New("failed to create or find stream after retries")
 	}
 
-	// 检查流是否已经包含了我们的唯一主题，如果没有则更新
+	// 如果流已存在但没有我们需要的主题，添加主题
+	// 这在Stream已经存在但主题模式不同时发生
+	streamSubjectPattern := streamSubject + ".>"
 	found := false
 	for _, subject := range streamInfo.Config.Subjects {
-		if subject == uniqueSubject+".>" {
+		if subject == streamSubjectPattern {
 			found = true
 			break
 		}
@@ -258,12 +268,12 @@ func (n *NatsBus) setupJetStream() error {
 
 	// 如果需要更新流配置，添加新的主题
 	if !found {
-		updatedSubjects := append(streamInfo.Config.Subjects, uniqueSubject+".>")
+		updatedSubjects := append(streamInfo.Config.Subjects, streamSubjectPattern)
 		streamInfo.Config.Subjects = updatedSubjects
 
 		slog.Info("updating stream with new subject",
 			"stream", n.cfg.StreamName,
-			"new_subject", uniqueSubject+".>")
+			"new_subject", streamSubjectPattern)
 
 		_, err = js.UpdateStream(&streamInfo.Config)
 		if err != nil {

@@ -2,6 +2,7 @@
 package metrics
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -37,7 +38,8 @@ type Metrics struct {
 	MessageLatency prometheus.Histogram
 
 	// 错误指标
-	ErrorsTotal prometheus.Counter
+	ErrorsTotal         prometheus.Counter
+	CriticalErrorsTotal prometheus.Counter
 
 	// 认证指标
 	AuthSuccess prometheus.Counter
@@ -124,6 +126,11 @@ func NewMetrics(namespace string) *Metrics {
 			Namespace: namespace,
 			Name:      "errors_total",
 			Help:      "错误总数",
+		}),
+		CriticalErrorsTotal: promauto.With(registry).NewCounter(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "critical_errors_total",
+			Help:      "严重错误总数",
 		}),
 
 		// 认证指标
@@ -237,4 +244,13 @@ func RecordAuthSuccess() {
 func RecordAuthFailure() {
 	m := Default()
 	m.AuthFailure.Inc()
+}
+
+// RecordCriticalError 记录严重错误
+func RecordCriticalError(errorType string) {
+	m := Default()
+	m.CriticalErrorsTotal.Inc()
+
+	// 记录在日志中，便于排查
+	slog.Error("critical error encountered", "type", errorType)
 }

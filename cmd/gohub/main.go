@@ -46,22 +46,23 @@ var upgrader = websocket.Upgrader{
 func main() {
 	flag.Parse()
 
-	// 初始化日志
-	logHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-
-	logger := slog.New(logHandler)
-	slog.SetDefault(logger)
-
+	// 加载配置
 	config, err := loadConfig(*configFile)
 	if err != nil {
+		// 使用简单日志记录配置加载错误
 		slog.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 初始化日志
+	logLevel := parseLogLevel(config.Log.Level)
+	logHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: logLevel,
+	})
+
+	logger := slog.New(logHandler)
+	slog.SetDefault(logger)
+	slog.Info("Logger initialized", "level", config.Log.Level)
 
 	// 初始化默认指标
 	metrics.Default()
@@ -69,8 +70,20 @@ func main() {
 	var messageBus bus.MessageBus
 	if config.Cluster.Enabled {
 		slog.Info("Cluster mode enabled, using message bus")
-		// 使用 noop 作为默认消息总线 (将来可替换为 Redis/NATS)
-		messageBus, err = hub_nats.New(hub_nats.DefaultConfig())
+		// 从配置创建NATS连接
+		natsConfig := hub_nats.Config{
+			URLs:             config.Cluster.NATS.URLs,
+			Name:             config.Cluster.NATS.Name,
+			ReconnectWait:    config.Cluster.NATS.ReconnectWait,
+			MaxReconnects:    config.Cluster.NATS.MaxReconnects,
+			ConnectTimeout:   config.Cluster.NATS.ConnectTimeout,
+			OpTimeout:        config.Cluster.NATS.OpTimeout,
+			UseJetStream:     config.Cluster.NATS.UseJetStream,
+			StreamName:       config.Cluster.NATS.StreamName,
+			ConsumerName:     config.Cluster.NATS.ConsumerName,
+			MessageRetention: config.Cluster.NATS.MessageRetention,
+		}
+		messageBus, err = hub_nats.New(natsConfig)
 		if err != nil {
 			slog.Error("Failed to connect to NATS", "error", err)
 			os.Exit(1)
@@ -158,9 +171,12 @@ func main() {
 			}
 		}
 
+		// 将Hub实例添加到上下文中
+		requestCtxWithHub := context.WithValue(r.Context(), "hub", wsHub)
+
 		// 创建WebSocket客户端
 		wsConn := myws.NewGorillaConn(conn)
-		client := hub2.NewClient(ctx, clientID, wsConn, hubConfig, func(id string) {
+		client := hub2.NewClient(requestCtxWithHub, clientID, wsConn, hubConfig, func(id string) {
 			wsHub.Unregister(id)
 			metrics.ClientDisconnected()
 		}, d)
@@ -175,7 +191,7 @@ func main() {
 		metrics.ClientConnected()
 
 		// 触发SDK客户端连接事件
-		go gohubSDK.TriggerEvent(ctx, sdk.Event{
+		go gohubSDK.TriggerEvent(requestCtxWithHub, sdk.Event{
 			Type:     sdk.EventClientConnected,
 			ClientID: clientID,
 			Time:     time.Now(),
@@ -225,8 +241,6 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("Server shutdown error", "error", err)
 		}
-
-		cancel() // 取消主上下文
 	}()
 
 	// 启动服务器
@@ -258,6 +272,19 @@ type Config struct {
 			DialTimeout time.Duration `mapstructure:"dial_timeout"`
 			KeyPrefix   string        `mapstructure:"key_prefix"`
 		} `mapstructure:"etcd"`
+		// 添加NATS配置
+		NATS struct {
+			URLs             []string      `mapstructure:"urls"`
+			Name             string        `mapstructure:"name"`
+			ReconnectWait    time.Duration `mapstructure:"reconnect_wait"`
+			MaxReconnects    int           `mapstructure:"max_reconnects"`
+			ConnectTimeout   time.Duration `mapstructure:"connect_timeout"`
+			OpTimeout        time.Duration `mapstructure:"op_timeout"`
+			UseJetStream     bool          `mapstructure:"use_jetstream"`
+			StreamName       string        `mapstructure:"stream_name"`
+			ConsumerName     string        `mapstructure:"consumer_name"`
+			MessageRetention time.Duration `mapstructure:"message_retention"`
+		} `mapstructure:"nats"`
 	} `mapstructure:"cluster"`
 
 	Auth struct {
@@ -267,6 +294,11 @@ type Config struct {
 		AllowAnonymous bool   `mapstructure:"allow_anonymous"`
 	} `mapstructure:"auth"`
 
+	// 添加日志配置
+	Log struct {
+		Level string `mapstructure:"level"`
+	} `mapstructure:"log"`
+
 	// 添加版本字段
 	Version string `mapstructure:"version"`
 }
@@ -275,28 +307,50 @@ type Config struct {
 func loadConfig(configFile string) (Config, error) {
 	viper.SetConfigFile(configFile)
 
-	// 设置环境变量前缀和分隔符
+	// 设置默认值
+	viper.SetDefault("server.addr", ":8080")
+	viper.SetDefault("server.read_timeout", 60*time.Second)
+	viper.SetDefault("server.write_timeout", 60*time.Second)
+	viper.SetDefault("server.read_buffer_size", 4*1024)
+	viper.SetDefault("server.write_buffer_size", 4*1024)
+	viper.SetDefault("server.message_buffer_cap", 256)
+
+	viper.SetDefault("cluster.enabled", false)
+
+	// NATS默认配置
+	viper.SetDefault("cluster.nats.urls", []string{"nats://localhost:4222"})
+	viper.SetDefault("cluster.nats.name", "gohub-client")
+	viper.SetDefault("cluster.nats.reconnect_wait", 2*time.Second)
+	viper.SetDefault("cluster.nats.max_reconnects", -1)
+	viper.SetDefault("cluster.nats.connect_timeout", 5*time.Second)
+	viper.SetDefault("cluster.nats.op_timeout", 10*time.Millisecond)
+	viper.SetDefault("cluster.nats.use_jetstream", false)
+	viper.SetDefault("cluster.nats.stream_name", "GOHUB")
+	viper.SetDefault("cluster.nats.consumer_name", "gohub-consumer")
+	viper.SetDefault("cluster.nats.message_retention", 1*time.Hour)
+
+	viper.SetDefault("auth.enabled", false)
+	viper.SetDefault("auth.secret_key", "changeme")
+	viper.SetDefault("auth.issuer", "gohub")
+	viper.SetDefault("auth.allow_anonymous", true)
+
+	// 日志默认配置
+	viper.SetDefault("log.level", "info")
+
+	viper.SetDefault("version", "dev")
+
+	// 支持环境变量
 	viper.SetEnvPrefix("GOHUB")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
-	var config Config
-
 	if err := viper.ReadInConfig(); err != nil {
-		return config, err
+		return Config{}, err
 	}
 
+	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
-		return config, err
-	}
-
-	// 设置默认值
-	if config.Auth.SecretKey == "" {
-		config.Auth.SecretKey = "default-secret-key-change-this-in-production"
-	}
-
-	if config.Auth.Issuer == "" {
-		config.Auth.Issuer = "gohub"
+		return Config{}, err
 	}
 
 	return config, nil
@@ -305,4 +359,20 @@ func loadConfig(configFile string) (Config, error) {
 // 生成客户端ID
 func generateClientID() string {
 	return uuid.New().String()
+}
+
+// 解析日志级别
+func parseLogLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"gohub/internal/bus"
+	"gohub/internal/metrics"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 )
@@ -16,12 +19,14 @@ var (
 
 // Hub 管理WebSocket客户端连接和消息分发
 type Hub struct {
-	clients     sync.Map     // key=id, value=*Client
-	roomManager *RoomManager // 添加房间管理器
-	bus         bus.MessageBus
-	cfg         Config
-	ctx         context.Context
-	cancel      context.CancelFunc
+	clients      sync.Map     // key=id, value=*Client
+	roomManager  *RoomManager // 添加房间管理器
+	bus          bus.MessageBus
+	cfg          Config
+	ctx          context.Context
+	cancel       context.CancelFunc
+	deduplicator *MessageDeduplicator // 消息去重器
+	nodeID       string               // 节点ID，用于标识不同的Hub实例
 }
 
 // 主题常量
@@ -43,43 +48,99 @@ func (c *Config) WithBusTimeout(timeout time.Duration) *Config {
 
 func NewHub(messageBus bus.MessageBus, cfg Config) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// 生成唯一的节点ID
+	nodeID := generateNodeID()
+
 	h := &Hub{
-		bus:    messageBus,
-		cfg:    cfg,
-		ctx:    ctx,
-		cancel: cancel,
+		bus:          messageBus,
+		cfg:          cfg,
+		ctx:          ctx,
+		cancel:       cancel,
+		nodeID:       nodeID,
+		deduplicator: NewMessageDeduplicator(nodeID, 30*time.Second),
 	}
 
-	// 初始化房间管理器
+	// 初始化房间管理器，并传递去重器
 	h.roomManager = NewRoomManager(ctx, messageBus)
 
 	if messageBus != nil {
 		h.setupBusSubscriptions(ctx)
 	}
 
+	slog.Info("Hub initialized", "node_id", nodeID)
 	return h
+}
+
+// generateNodeID 生成唯一的节点标识
+func generateNodeID() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	return fmt.Sprintf("%s-%d-%x", hostname, os.Getpid(), time.Now().UnixNano())
 }
 
 // setupBusSubscriptions 设置消息总线订阅
 func (h *Hub) setupBusSubscriptions(ctx context.Context) {
 	// 订阅广播主题
 	go func() {
-		broadcastCh, err := h.bus.Subscribe(ctx, BroadcastTopic)
-		if err != nil {
-			slog.Error("failed to subscribe to broadcast topic", "error", err)
-			return
-		}
+		// 重试参数
+		const maxRetries = 5
+		const initialBackoff = 1 * time.Second
+		const maxBackoff = 30 * time.Second
+		retryCount := 0
+		backoff := initialBackoff
 
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg, ok := <-broadcastCh:
-				if !ok {
+			broadcastCh, err := h.bus.Subscribe(ctx, BroadcastTopic)
+			if err != nil {
+				retryCount++
+				if retryCount > maxRetries {
+					slog.Error("failed to subscribe to broadcast topic after max retries",
+						"error", err,
+						"attempts", retryCount)
+					// 将Hub标记为不健康，或者触发告警
+					metrics.RecordCriticalError("failed_to_subscribe_broadcast")
 					return
 				}
-				// 处理从总线接收的广播消息
-				h.processBusMessage(msg)
+
+				slog.Warn("failed to subscribe to broadcast topic, retrying",
+					"error", err,
+					"attempt", retryCount,
+					"backoff_ms", backoff.Milliseconds())
+
+				// 指数退避重试
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+					// 增加退避时间，但不超过最大值
+					backoff = time.Duration(float64(backoff) * 1.5)
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+					continue
+				}
+			}
+
+			// 订阅成功，重置重试计数
+			retryCount = 0
+			slog.Info("successfully subscribed to broadcast topic")
+
+			// 处理消息
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg, ok := <-broadcastCh:
+					if !ok {
+						slog.Warn("broadcast channel closed, resubscribing")
+						break
+					}
+					// 处理从总线接收的广播消息
+					h.processBusMessage(msg)
+				}
 			}
 		}
 	}()
@@ -93,28 +154,45 @@ type messageRecord struct {
 
 // processBusMessage 处理从消息总线接收的消息
 func (h *Hub) processBusMessage(data []byte) {
-	frame := Frame{
-		MsgType: 1, // 文本消息
-		Data:    data,
+	// 解析BusMessage结构
+	var busMsg BusMessage
+	if err := json.Unmarshal(data, &busMsg); err != nil {
+		slog.Error("failed to unmarshal bus message", "error", err)
+		// 如果无法解析为BusMessage，尝试作为原始消息处理（向后兼容）
+		frame := Frame{
+			MsgType: 1, // 文本消息
+			Data:    data,
+		}
+		h.localBroadcast(frame)
+		return
 	}
 
-	msgContent := string(data)
-	slog.Debug("received message from bus", "content", msgContent)
+	// 检查消息是否已处理过（去重）
+	msgID := busMsg.ID.String()
+	if h.deduplicator.IsDuplicate(msgID) {
+		slog.Debug("ignoring duplicate bus message", "id", msgID)
+		return
+	}
 
-	// 本地广播消息
-	count := 0
-	h.clients.Range(func(_, v interface{}) bool {
-		client := v.(*Client)
-		// 忽略发送错误，避免一个客户端影响所有人
-		if err := client.Send(frame); err == nil {
-			count++
-		} else {
-			slog.Debug("failed to deliver bus message to client",
-				"client", client.ID(), "error", err)
+	// 标记消息为已处理
+	h.deduplicator.MarkProcessed(msgID)
+
+	// 根据消息类型处理
+	switch busMsg.Type {
+	case "broadcast":
+		// 创建广播帧
+		frame := Frame{
+			MsgType: 1, // 文本消息
+			Data:    busMsg.Payload,
 		}
-		return true
-	})
-	slog.Debug("bus message broadcast complete", "recipients", count)
+
+		// 执行本地广播
+		h.localBroadcast(frame)
+		slog.Debug("processed bus broadcast message", "id", msgID, "source_node", busMsg.ID.NodeID)
+
+	default:
+		slog.Warn("received unknown bus message type", "type", busMsg.Type)
+	}
 }
 
 // Register 注册一个客户端到Hub
@@ -138,34 +216,82 @@ func (h *Hub) Register(c *Client) {
 
 // subscribeClientUnicast 为客户端订阅单播消息
 func (h *Hub) subscribeClientUnicast(clientID, topic string) {
-	unicastCh, err := h.bus.Subscribe(h.ctx, topic)
-	if err != nil {
-		slog.Error("failed to subscribe to unicast topic", "topic", topic, "error", err)
-		return
-	}
+	// 重试参数
+	const maxRetries = 5
+	const initialBackoff = 500 * time.Millisecond
+	const maxBackoff = 10 * time.Second
+	retryCount := 0
+	backoff := initialBackoff
 
 	for {
-		select {
-		case <-h.ctx.Done():
-			return
-		case msg, ok := <-unicastCh:
-			if !ok {
+		unicastCh, err := h.bus.Subscribe(h.ctx, topic)
+		if err != nil {
+			retryCount++
+			if retryCount > maxRetries {
+				slog.Error("failed to subscribe to unicast topic after max retries",
+					"topic", topic,
+					"client", clientID,
+					"error", err,
+					"attempts", retryCount)
 				return
 			}
 
-			// 尝试发送消息到客户端
-			if client, exists := h.clients.Load(clientID); exists {
-				frame := Frame{
-					MsgType: 1, // 文本消息
-					Data:    msg,
-				}
-				if err := client.(*Client).Send(frame); err != nil {
-					slog.Debug("failed to deliver unicast message", "client", clientID, "error", err)
-				}
-			} else {
-				// 客户端不存在，取消订阅
-				_ = h.bus.Unsubscribe(topic)
+			slog.Warn("failed to subscribe to unicast topic, retrying",
+				"topic", topic,
+				"client", clientID,
+				"error", err,
+				"attempt", retryCount,
+				"backoff_ms", backoff.Milliseconds())
+
+			// 指数退避重试
+			select {
+			case <-h.ctx.Done():
 				return
+			case <-time.After(backoff):
+				// 增加退避时间，但不超过最大值
+				backoff = time.Duration(float64(backoff) * 1.5)
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+
+				// 检查客户端是否已断开连接
+				if _, exists := h.clients.Load(clientID); !exists {
+					slog.Info("client disconnected before unicast subscription completed", "client", clientID)
+					return
+				}
+
+				continue
+			}
+		}
+
+		// 订阅成功
+		slog.Debug("successfully subscribed to unicast topic", "topic", topic, "client", clientID)
+
+		// 处理单播消息
+		for {
+			select {
+			case <-h.ctx.Done():
+				return
+			case msg, ok := <-unicastCh:
+				if !ok {
+					slog.Warn("unicast channel closed, resubscribing", "client", clientID)
+					break
+				}
+
+				// 尝试发送消息到客户端
+				if client, exists := h.clients.Load(clientID); exists {
+					frame := Frame{
+						MsgType: 1, // 文本消息
+						Data:    msg,
+					}
+					if err := client.(*Client).Send(frame); err != nil {
+						slog.Debug("failed to deliver unicast message", "client", clientID, "error", err)
+					}
+				} else {
+					// 客户端不存在，取消订阅
+					_ = h.bus.Unsubscribe(topic)
+					return
+				}
 			}
 		}
 	}
@@ -207,24 +333,46 @@ func (h *Hub) Push(id string, f Frame) error {
 
 // Broadcast 向所有连接的客户端广播消息
 func (h *Hub) Broadcast(f Frame) {
-	// 避免消息重复处理
-	msgContent := string(f.Data)
-
 	// 如果启用了消息总线，通过总线发布
 	if h.bus != nil {
+		// 生成消息ID
+		msgID := h.deduplicator.GenerateID()
+
+		// 构造带有元数据的消息
+		busMsg := BusMessage{
+			ID:      msgID,
+			Type:    "broadcast",
+			Payload: f.Data,
+			SentAt:  time.Now(),
+		}
+
+		// 将消息标记为已处理，避免稍后被自己处理
+		h.deduplicator.MarkProcessed(msgID.String())
+
+		// 序列化消息
+		msgData, err := json.Marshal(busMsg)
+		if err != nil {
+			slog.Error("failed to marshal broadcast message", "error", err)
+			// 如果序列化失败，仍执行本地广播
+			h.localBroadcast(f)
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), h.cfg.BusTimeout)
 		defer cancel()
 
-		// 尝试通过总线发布
-		if err := h.bus.Publish(ctx, BroadcastTopic, f.Data); err != nil {
+		// 通过总线发布
+		if err := h.bus.Publish(ctx, BroadcastTopic, msgData); err != nil {
 			slog.Warn("failed to publish broadcast via bus", "error", err)
+			// 如果总线发布失败，仍执行本地广播
+			h.localBroadcast(f)
 		}
+		// 不再执行本地广播，由processBusMessage处理所有节点的广播
+		return
 	}
 
-	// 执行本地广播
+	// 如果没有总线，直接执行本地广播
 	h.localBroadcast(f)
-
-	slog.Debug("broadcast complete", "message", msgContent)
 }
 
 // localBroadcast 执行本地广播，向所有本地客户端发送消息
