@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"gohub/internal/bus/noop"
+	"gohub/internal/bus"
+	hub_nats "gohub/internal/bus/nats"
 	"gohub/internal/dispatcher"
 	"gohub/internal/handlers"
 	hub2 "gohub/internal/hub"
@@ -34,38 +35,39 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // 允许所有跨域请求，生产环境应该限制
+		return true
 	},
 }
 
 func main() {
-	// 解析命令行参数
 	flag.Parse()
 
 	// 初始化日志
 	logHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	})
+
 	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
 
-	// 加载配置
 	config, err := loadConfig(*configFile)
 	if err != nil {
 		slog.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
 
-	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 根据配置决定是否创建消息总线
-	var messageBus hub2.MessageBus
+	var messageBus bus.MessageBus
 	if config.Cluster.Enabled {
 		slog.Info("Cluster mode enabled, using message bus")
 		// 使用 noop 作为默认消息总线 (将来可替换为 Redis/NATS)
-		messageBus = noop.New()
+		messageBus, err = hub_nats.New(hub_nats.DefaultConfig())
+		if err != nil {
+			slog.Error("Failed to connect to NATS", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// 创建Hub

@@ -3,6 +3,7 @@ package nats
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -65,13 +66,15 @@ func DefaultConfig() Config {
 
 // NatsBus 基于NATS的消息总线实现
 type NatsBus struct {
-	conn       *nats.Conn
-	js         nats.JetStreamContext
-	cfg        Config
-	mu         sync.RWMutex
-	closed     bool
-	subs       map[string]*nats.Subscription
-	reconnects uint64 // 重连次数统计
+	conn          *nats.Conn
+	js            nats.JetStreamContext
+	cfg           Config
+	mu            sync.RWMutex
+	closed        bool
+	subs          map[string]*nats.Subscription
+	stopChans     map[string]chan struct{} // 用于通知订阅goroutine退出的通道
+	reconnects    uint64                   // 重连次数统计
+	streamSubject string                   // JetStream流的唯一主题前缀
 }
 
 // New 创建一个新的NatsBus实例
@@ -85,12 +88,40 @@ func New(cfg Config) (*NatsBus, error) {
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			slog.Warn("nats disconnected", "error", err)
 		}),
-		nats.ReconnectHandler(func(_ *nats.Conn) {
-			slog.Info("nats reconnected")
+		nats.ReconnectHandler(func(conn *nats.Conn) {
+			// 记录服务器URL，便于调试
+			serverURL := ""
+			if conn.ConnectedUrl() != "" {
+				serverURL = conn.ConnectedUrl()
+			}
+
+			slog.Info("nats reconnected", "server", serverURL, "attempts", conn.Reconnects)
 		}),
-		nats.ClosedHandler(func(_ *nats.Conn) {
-			slog.Info("nats connection closed")
+		nats.ClosedHandler(func(conn *nats.Conn) {
+			if conn.LastError() != nil {
+				slog.Error("nats connection closed with error", "error", conn.LastError())
+			} else {
+				slog.Info("nats connection closed gracefully")
+			}
 		}),
+		nats.ErrorHandler(func(conn *nats.Conn, sub *nats.Subscription, err error) {
+			if sub != nil {
+				delivered, _ := sub.Delivered()
+				slog.Error("nats async error",
+					"error", err,
+					"subject", sub.Subject,
+					"queue", sub.Queue,
+					"delivered", delivered)
+			} else {
+				slog.Error("nats connection error", "error", err)
+			}
+		}),
+		// 添加重试逻辑，减少连接失败的可能性
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(cfg.MaxReconnects),
+		// 设置Ping间隔以检测连接状态
+		nats.PingInterval(20 * time.Second),
+		nats.MaxPingsOutstanding(5),
 	}
 
 	// 连接到NATS服务器
@@ -101,54 +132,143 @@ func New(cfg Config) (*NatsBus, error) {
 		serverURL = strings.Join(cfg.URLs, ",")
 	}
 
+	slog.Info("connecting to nats", "urls", cfg.URLs)
 	nc, err := nats.Connect(serverURL, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
+	// 创建并初始化NatsBus实例
 	nb := &NatsBus{
-		conn: nc,
-		cfg:  cfg,
-		subs: make(map[string]*nats.Subscription),
+		conn:      nc,
+		cfg:       cfg,
+		subs:      make(map[string]*nats.Subscription),
+		stopChans: make(map[string]chan struct{}),
 	}
 
 	// 如果配置了使用JetStream，初始化JetStream上下文
 	if cfg.UseJetStream {
 		if err := nb.setupJetStream(); err != nil {
+			// 关闭连接并返回错误
 			nc.Close()
-			return nil, err
+			return nil, fmt.Errorf("failed to setup JetStream: %w", err)
 		}
 	}
 
-	slog.Info("connected to nats", "urls", cfg.URLs)
+	connectedUrl := nc.ConnectedUrl()
+	if connectedUrl == "" {
+		connectedUrl = "unknown"
+	}
+	slog.Info("connected to nats",
+		"server", connectedUrl,
+		"jetstream_enabled", cfg.UseJetStream)
 	return nb, nil
 }
 
 // setupJetStream 设置JetStream
 func (n *NatsBus) setupJetStream() error {
 	// 创建JetStream上下文
-	js, err := n.conn.JetStream()
+	js, err := n.conn.JetStream(nats.MaxWait(5 * time.Second))
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create JetStream context: %w", err)
 	}
 
+	// 生成唯一的主题前缀
+	uniqueSubject := fmt.Sprintf("%s.%d", n.cfg.StreamName, time.Now().UnixNano())
+	n.streamSubject = uniqueSubject
+
+	slog.Info("creating/checking jetstream stream", "name", n.cfg.StreamName, "subject", uniqueSubject)
+
 	// 检查并创建流
-	_, err = js.StreamInfo(n.cfg.StreamName)
-	if err != nil {
-		if errors.Is(err, nats.ErrStreamNotFound) {
-			// 创建流
-			_, err = js.AddStream(&nats.StreamConfig{
-				Name:      n.cfg.StreamName,
-				Subjects:  []string{">"},
-				Retention: nats.WorkQueuePolicy,
-				MaxAge:    n.cfg.MessageRetention,
-			})
-			if err != nil {
-				return err
-			}
-			slog.Info("created jetstream stream", "name", n.cfg.StreamName)
-		} else {
-			return err
+	var streamInfo *nats.StreamInfo
+
+	// 添加重试逻辑
+	maxRetries := 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		streamInfo, err = js.StreamInfo(n.cfg.StreamName)
+		if err == nil {
+			// 流已存在
+			break
+		}
+
+		if !errors.Is(err, nats.ErrStreamNotFound) {
+			// 其他错误，继续重试
+			lastErr = err
+			slog.Warn("error checking stream info, retrying",
+				"attempt", i+1,
+				"error", err,
+				"stream", n.cfg.StreamName)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// 流不存在，创建流
+		streamConfig := &nats.StreamConfig{
+			Name:         n.cfg.StreamName,
+			Subjects:     []string{uniqueSubject + ".>"}, // 使用唯一前缀捕获主题
+			Retention:    nats.WorkQueuePolicy,
+			MaxAge:       n.cfg.MessageRetention,
+			NoAck:        false,              // 默认需要确认
+			Discard:      nats.DiscardOld,    // 丢弃旧消息
+			Storage:      nats.MemoryStorage, // 使用内存存储，测试更快
+			Replicas:     1,                  // 单副本
+			MaxMsgSize:   4 * 1024 * 1024,    // 默认最大消息大小为4MB
+			Duplicates:   30 * time.Second,   // 重复消息检测窗口
+			MaxConsumers: 100,                // 最大消费者数量
+		}
+
+		slog.Info("creating new jetstream stream",
+			"name", n.cfg.StreamName,
+			"subject", uniqueSubject,
+			"retention", "workqueue",
+			"storage", "memory",
+			"max_age", n.cfg.MessageRetention)
+
+		streamInfo, err = js.AddStream(streamConfig)
+		if err != nil {
+			lastErr = err
+			slog.Error("failed to create stream", "error", err, "attempt", i+1)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		slog.Info("jetstream stream created successfully",
+			"name", streamInfo.Config.Name,
+			"subject", streamInfo.Config.Subjects[0])
+		break
+	}
+
+	if streamInfo == nil {
+		if lastErr != nil {
+			return fmt.Errorf("failed to create or find stream after retries: %w", lastErr)
+		}
+		return errors.New("failed to create or find stream after retries")
+	}
+
+	// 检查流是否已经包含了我们的唯一主题，如果没有则更新
+	found := false
+	for _, subject := range streamInfo.Config.Subjects {
+		if subject == uniqueSubject+".>" {
+			found = true
+			break
+		}
+	}
+
+	// 如果需要更新流配置，添加新的主题
+	if !found {
+		updatedSubjects := append(streamInfo.Config.Subjects, uniqueSubject+".>")
+		streamInfo.Config.Subjects = updatedSubjects
+
+		slog.Info("updating stream with new subject",
+			"stream", n.cfg.StreamName,
+			"new_subject", uniqueSubject+".>")
+
+		_, err = js.UpdateStream(&streamInfo.Config)
+		if err != nil {
+			slog.Error("failed to update stream subjects", "error", err)
+			return fmt.Errorf("failed to update stream with new subject: %w", err)
 		}
 	}
 
@@ -170,21 +290,75 @@ func (n *NatsBus) Close() error {
 		return nil
 	}
 
+	slog.Info("closing nats message bus...")
+
 	// 标记为已关闭
 	n.closed = true
 
+	// 先关闭所有停止通道，通知处理goroutine退出
+	for topic, stopCh := range n.stopChans {
+		slog.Debug("closing stop channel for subscription", "topic", topic)
+		close(stopCh)
+		delete(n.stopChans, topic)
+	}
+
+	// 等待一小段时间，确保goroutine有时间响应停止信号
+	time.Sleep(200 * time.Millisecond)
+
 	// 关闭所有订阅
-	for _, sub := range n.subs {
-		sub.Unsubscribe()
+	for topic, sub := range n.subs {
+		// 对于JetStream订阅使用Drain，对于标准NATS使用Unsubscribe
+		if n.cfg.UseJetStream && n.js != nil {
+			slog.Debug("draining jetstream subscription", "topic", topic)
+			if err := sub.Drain(); err != nil {
+				slog.Error("failed to drain subscription during close", "topic", topic, "error", err)
+			}
+		} else {
+			slog.Debug("unsubscribing nats subscription", "topic", topic)
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("failed to unsubscribe during close", "topic", topic, "error", err)
+			}
+		}
+	}
+
+	// 给JetStream的Drain操作更多时间完成
+	if n.cfg.UseJetStream && n.js != nil {
+		drainWait := 500 * time.Millisecond
+		slog.Debug("waiting for jetstream drain to complete", "wait_ms", drainWait.Milliseconds())
+		time.Sleep(drainWait)
 	}
 
 	// 清空订阅映射
+	subsCount := len(n.subs)
 	n.subs = make(map[string]*nats.Subscription)
+	n.stopChans = make(map[string]chan struct{})
 
-	// 关闭连接
-	n.conn.Close()
+	// 尝试使用Drain关闭连接，这样可以让所有挂起的操作完成
+	var closeErr error
+	drainTimeout := 1 * time.Second
 
-	return nil
+	// 如果配置了超时时间，使用配置的时间
+	if n.cfg.OpTimeout > 0 {
+		drainTimeout = n.cfg.OpTimeout * 10
+		if drainTimeout > 5*time.Second {
+			drainTimeout = 5 * time.Second
+		}
+	}
+
+	slog.Debug("draining nats connection", "timeout_ms", drainTimeout.Milliseconds())
+	if err := n.conn.Drain(); err != nil {
+		slog.Error("error during nats connection drain", "error", err)
+		closeErr = err
+
+		// 如果Drain失败，尝试直接关闭
+		n.conn.Close()
+	} else {
+		// 等待Drain完成指定的超时时间
+		time.Sleep(drainTimeout)
+	}
+
+	slog.Info("nats bus closed", "subscriptions_cleaned", subsCount)
+	return closeErr
 }
 
 // 确保NatsBus实现了MessageBus接口

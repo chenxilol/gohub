@@ -3,12 +3,12 @@ package hub
 import (
 	"context"
 	"errors"
+	"gohub/internal/bus"
 	"log/slog"
 	"sync"
 	"time"
 )
 
-// 定义错误
 var (
 	ErrClientNotFound = errors.New("client not found")
 )
@@ -16,25 +16,10 @@ var (
 // Hub 管理WebSocket客户端连接和消息分发
 type Hub struct {
 	clients sync.Map // key=id, value=*Client
-	bus     MessageBus
+	bus     bus.MessageBus
 	cfg     Config
 	ctx     context.Context
 	cancel  context.CancelFunc
-}
-
-// MessageBus 节点间消息传递接口
-type MessageBus interface {
-	// Publish 发布消息到指定主题
-	Publish(ctx context.Context, topic string, data []byte) error
-
-	// Subscribe 订阅指定主题，返回接收channel
-	Subscribe(ctx context.Context, topic string) (<-chan []byte, error)
-
-	// Unsubscribe 取消订阅主题
-	Unsubscribe(topic string) error
-
-	// Close 关闭消息总线
-	Close() error
 }
 
 // 主题常量
@@ -48,14 +33,13 @@ func FormatUnicastTopic(clientID string) string {
 	return UnicastPrefix + clientID
 }
 
-// Config 中添加总线超时配置
+// WithBusTimeout Config 中添加总线超时配置
 func (c *Config) WithBusTimeout(timeout time.Duration) *Config {
 	c.BusTimeout = timeout
 	return c
 }
 
-// NewHub 创建一个新的Hub实例
-func NewHub(messageBus MessageBus, cfg Config) *Hub {
+func NewHub(messageBus bus.MessageBus, cfg Config) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &Hub{
 		bus:    messageBus,
@@ -64,7 +48,6 @@ func NewHub(messageBus MessageBus, cfg Config) *Hub {
 		cancel: cancel,
 	}
 
-	// 如果消息总线已配置，订阅广播消息
 	if messageBus != nil {
 		h.setupBusSubscriptions(ctx)
 	}
