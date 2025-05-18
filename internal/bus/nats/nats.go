@@ -17,35 +17,16 @@ import (
 
 // Config NATS连接配置选项
 type Config struct {
-	// 连接地址，例如 nats://localhost:4222
-	URLs []string
-
-	// 连接名称，用于标识客户端
-	Name string
-
-	// 重连等待时间
-	ReconnectWait time.Duration
-
-	// 最大重连次数，-1表示无限重连
-	MaxReconnects int
-
-	// 连接超时
-	ConnectTimeout time.Duration
-
-	// 消息总线操作超时（发布超时）
-	OpTimeout time.Duration
-
-	// 是否使用JetStream
-	UseJetStream bool
-
-	// JetStream流名称
-	StreamName string
-
-	// JetStream消费者名称
-	ConsumerName string
-
-	// JetStream消息保留时间
-	MessageRetention time.Duration
+	URLs             []string      `mapstructure:"urls" json:"urls"` //  连接地址
+	Name             string        `mapstructure:"name" json:"name"`
+	ReconnectWait    time.Duration `mapstructure:"reconnect_wait" json:"reconnect_wait"`
+	MaxReconnects    int           `mapstructure:"max_reconnects" json:"max_reconnects"`
+	ConnectTimeout   time.Duration `mapstructure:"connect_timeout" json:"connect_timeout"`
+	OpTimeout        time.Duration `mapstructure:"op_timeout" json:"op_timeout"`       //  所有操作的超时时间，包括连接、订阅、发布、消费等
+	UseJetStream     bool          `mapstructure:"use_jetstream" json:"use_jetstream"` // 是否使用JetStream，如果启用，则使用JetStream来实现消息持久化
+	StreamName       string        `mapstructure:"stream_name" json:"stream_name"`
+	ConsumerName     string
+	MessageRetention time.Duration `mapstructure:"message_retention" json:"message_retention"` // 消息保留时间
 }
 
 // DefaultConfig 返回默认配置

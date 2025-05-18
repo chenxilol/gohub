@@ -5,22 +5,18 @@ version: "1.0.0"
 
 # 服务器配置
 server:
-  addr: ":8080"                  # HTTP服务监听地址
-  read_timeout: 60s              # WebSocket读取超时
-  write_timeout: 10s             # WebSocket写入超时
-  read_buffer_size: 4096         # 读取缓冲区大小 (字节)
-  write_buffer_size: 4096        # 写入缓冲区大小 (字节)
-  message_buffer_cap: 256        # 消息队列容量 (消息数)
+  addr: ":8080" # HTTP服务监听地址
+  hub :
+    read_timeout: 60s              # WebSocket读取超时
+    write_timeout: 10s             # WebSocket写入超时
+    read_buffer_size: 4096         # 读取缓冲区大小 (字节)
+    write_buffer_size: 4096        # 写入缓冲区大小 (字节)
+    message_buffer_cap: 256        # 消息队列容量 (消息数)
+    bus_time_out : 10s
 
 # 集群配置
 cluster:
   enabled: false                 # 是否启用集群模式
-  # etcd配置 (用于服务发现)
-  etcd:                         
-    endpoints:
-      - "localhost:2379"
-    dial_timeout: 5s
-    key_prefix: "/gohub/nodes/"
   # NATS配置 (用于集群间通信)
   nats:
     urls:

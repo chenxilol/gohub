@@ -10,7 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// 更全面的MessageBus模拟，用于模拟真实的etcd行为
+// 更全面的MessageBus模拟
 type EnhancedMockBus struct {
 	publishedTopics []string
 	publishedData   [][]byte

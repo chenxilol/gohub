@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -182,8 +185,15 @@ func (h *Hub) processBusMessage(data []byte) {
 	case "broadcast":
 		// 创建广播帧
 		frame := Frame{
-			MsgType: 1, // 文本消息
+			MsgType: 1, // 默认为文本消息
 			Data:    busMsg.Payload,
+		}
+
+		// 如果Payload是JSON字符串，解析出实际内容
+		var strMsg string
+		if err := json.Unmarshal(busMsg.Payload, &strMsg); err == nil {
+			// 成功将payload解析为字符串，使用该字符串作为消息内容
+			frame.Data = []byte(strMsg)
 		}
 
 		// 执行本地广播
@@ -333,16 +343,46 @@ func (h *Hub) Push(id string, f Frame) error {
 
 // Broadcast 向所有连接的客户端广播消息
 func (h *Hub) Broadcast(f Frame) {
-	// 如果启用了消息总线，通过总线发布
+	// 先执行本地广播，确保本地客户端立即收到消息
+	h.localBroadcast(f)
+
+	// 如果启用了消息总线，通过总线发布（用于其他节点）
 	if h.bus != nil {
 		// 生成消息ID
 		msgID := h.deduplicator.GenerateID()
+
+		// 正确处理消息有效载荷
+		// 先将消息转换为JSON原始消息，如果是文本消息
+		var jsonPayload json.RawMessage
+		if f.MsgType == websocket.TextMessage {
+			// 检查数据是否已经是有效的JSON
+			if json.Valid(f.Data) {
+				jsonPayload = f.Data
+			} else {
+				// 不是有效的JSON，将其作为字符串值处理
+				jsonString, err := json.Marshal(string(f.Data))
+				if err != nil {
+					slog.Error("failed to marshal message content to JSON string", "error", err)
+					return
+				}
+				jsonPayload = jsonString
+			}
+		} else {
+			// 对于二进制消息，将其编码为base64字符串
+			b64Str := base64.StdEncoding.EncodeToString(f.Data)
+			jsonString, err := json.Marshal(b64Str)
+			if err != nil {
+				slog.Error("failed to marshal binary message to base64 JSON", "error", err)
+				return
+			}
+			jsonPayload = jsonString
+		}
 
 		// 构造带有元数据的消息
 		busMsg := BusMessage{
 			ID:      msgID,
 			Type:    "broadcast",
-			Payload: f.Data,
+			Payload: jsonPayload,
 			SentAt:  time.Now(),
 		}
 
@@ -353,8 +393,6 @@ func (h *Hub) Broadcast(f Frame) {
 		msgData, err := json.Marshal(busMsg)
 		if err != nil {
 			slog.Error("failed to marshal broadcast message", "error", err)
-			// 如果序列化失败，仍执行本地广播
-			h.localBroadcast(f)
 			return
 		}
 
@@ -364,15 +402,9 @@ func (h *Hub) Broadcast(f Frame) {
 		// 通过总线发布
 		if err := h.bus.Publish(ctx, BroadcastTopic, msgData); err != nil {
 			slog.Warn("failed to publish broadcast via bus", "error", err)
-			// 如果总线发布失败，仍执行本地广播
-			h.localBroadcast(f)
 		}
-		// 不再执行本地广播，由processBusMessage处理所有节点的广播
 		return
 	}
-
-	// 如果没有总线，直接执行本地广播
-	h.localBroadcast(f)
 }
 
 // localBroadcast 执行本地广播，向所有本地客户端发送消息

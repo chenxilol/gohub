@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"gohub/internal/auth"
 	"log/slog"
 	"sync"
@@ -45,12 +46,12 @@ type WSConn interface {
 
 // Config 客户端配置选项
 type Config struct {
-	ReadTimeout      time.Duration // 读取超时
-	WriteTimeout     time.Duration // 写入超时
-	ReadBufferSize   int           // 读取缓冲区大小
-	WriteBufferSize  int           // 写入缓冲区大小
-	MessageBufferCap int           // 消息队列容量
-	BusTimeout       time.Duration // 消息总线操作超时
+	ReadTimeout      time.Duration `mapstructure:"read_timeout" json:"read_timeout"`
+	WriteTimeout     time.Duration `mapstructure:"write_timeout" json:"write_timeout"`
+	ReadBufferSize   int           `mapstructure:"read_buffer_size" json:"read_buffer_size"`
+	WriteBufferSize  int           `mapstructure:"write_buffer_size" json:"write_buffer_size"`
+	MessageBufferCap int           `mapstructure:"message_buffer_cap" json:"message_buffer_cap"`
+	BusTimeout       time.Duration `mapstructure:"bus_timeout" json:"bus_timeout"`
 }
 
 // DefaultConfig 返回默认配置
@@ -109,7 +110,9 @@ func (c *Client) Send(f Frame) error {
 
 // readLoop 处理从客户端读取数据
 func (c *Client) readLoop() {
-	defer c.shutdown()
+	defer func() {
+		c.shutdown()
+	}()
 
 	c.conn.SetReadLimit(int64(c.cfg.ReadBufferSize))
 	_ = c.conn.SetReadDeadline(time.Now().Add(c.cfg.ReadTimeout))
@@ -155,7 +158,9 @@ func (c *Client) readLoop() {
 
 // writeLoop 处理向客户端写入数据
 func (c *Client) writeLoop() {
-	defer c.shutdown()
+	defer func() {
+		c.shutdown()
+	}()
 
 	for {
 		select {
