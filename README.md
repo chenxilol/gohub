@@ -1,119 +1,106 @@
-# GoHub NATS消息总线实现
+# GoHub - 强大的Go WebSocket服务
 
-本项目实现了基于NATS的分布式消息总线，用于在Hub节点间可靠传递消息。
+GoHub是一个基于Go语言开发的高性能WebSocket框架，专为实时通信设计。它提供了房间管理、认证授权、可靠的消息传递和分布式集群支持，适用于聊天应用、实时协作工具和在线游戏等场景。
 
-## 功能特点
+## 特性
 
-### 核心功能
+- **WebSocket通信**: 使用标准WebSocket协议，支持文本和二进制消息
+- **房间/频道管理**: 创建、加入、离开房间，房间内广播
+- **JWT认证与授权**: 提供基于JWT的认证和权限控制
+- **消息分发**: 灵活的消息路由机制
+- **集群支持**: 使用NATS作为消息总线，实现跨节点通信
+- **指标监控**: 集成Prometheus指标
+- **服务端SDK**: 简化业务逻辑与WebSocket功能的集成
+- **标准错误处理**: 统一的错误响应格式
+- **高并发**: 使用Go的并发特性，高效处理大量连接
 
-- **标准发布/订阅**: 实现基础的异步消息发布和订阅
-- **JetStream持久化**: 支持消息持久化，确保消息可靠投递
-- **消息确认机制**: 支持消息确认(Ack)和失败重试(Nak)
-- **自动重连**: 在网络故障时自动重连NATS服务器
-- **延迟重试**: 配置消息失败重试等待时间
-- **监控指标**: 集成Prometheus监控，包括错误计数、消息延迟等
+## 快速开始
 
-### 可靠性保障
+### 前提条件
 
-- **至少一次投递**: 通过JetStream确保消息不丢失
-- **超时处理**: 发布和订阅操作具有超时保护
-- **错误处理**: 全面的错误检测和处理机制
-- **重试策略**: 消息处理失败时自动重试
+- Go 1.20+
+- (可选) NATS Server 2.8+ (用于集群模式)
 
-## 项目结构
-
-```
-internal/bus/
-├── bus.go              # 消息总线接口定义
-└── nats/               # NATS实现
-    ├── nats.go         # 基础结构和连接管理
-    ├── core_pubsub.go  # 发布订阅核心逻辑
-    ├── metrics.go      # Prometheus指标定义
-    ├── core_test.go    # 核心功能测试
-    ├── jetstream_test.go # JetStream功能测试
-    └── publish_test.go # 发布专项测试
-```
-
-## 安装与测试
-
-### 安装NATS服务器
-
-在运行测试前，需要先安装NATS服务器：
+### 安装
 
 ```bash
-# 执行自动安装脚本
-./scripts/install_nats.sh
+git clone https://github.com/yourusername/gohub.git
+cd gohub
+go mod download
 ```
 
-### 运行测试
+### 配置
+
+复制示例配置文件:
 
 ```bash
-# 执行全部测试
-./scripts/test_bus.sh
-
-# 也可以只运行特定部分的测试
-go test -v ./internal/bus/nats -run TestNatsBus_JetStream
+cp configs/config.example.yaml configs/config.yaml
 ```
 
-## 使用示例
+编辑 `configs/config.yaml` 根据需要调整配置。
 
-### 创建消息总线实例
+### 运行
 
-```go
-import (
-    "gohub/internal/bus/nats"
-)
-
-// 创建配置
-cfg := nats.DefaultConfig()
-cfg.URLs = []string{"nats://localhost:4222"}
-cfg.UseJetStream = true // 启用JetStream持久化
-
-// 创建消息总线
-bus, err := nats.New(cfg)
-if err != nil {
-    log.Fatal(err)
-}
-defer bus.Close()
+```bash
+go run cmd/gohub/main.go
 ```
 
-### 发布消息
+服务将在 `http://localhost:8080` 启动，WebSocket端点位于 `ws://localhost:8080/ws`。
 
-```go
-// 发布消息到主题
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
+## 客户端连接
 
-err := bus.Publish(ctx, "my-topic", []byte("hello world"))
-if err != nil {
-    log.Printf("发布失败: %v", err)
-}
+使用任何WebSocket客户端库连接:
+
+```javascript
+// 示例: 使用JavaScript
+const ws = new WebSocket('ws://localhost:8080/ws?token=your-jwt-token');
+
+ws.onopen = () => {
+  console.log('Connected to GoHub');
+  
+  // 发送ping消息
+  ws.send(JSON.stringify({
+    message_id: 1,
+    message_type: "ping",
+    data: { ts: Date.now() }
+  }));
+};
+
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  console.log('Received:', message);
+};
 ```
 
-### 订阅消息
+## API端点
 
-```go
-// 订阅主题
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
+- `/ws` - WebSocket连接端点
+- `/metrics` - Prometheus指标 (用于监控)
+- `/health` - 健康检查端点
 
-ch, err := bus.Subscribe(ctx, "my-topic")
-if err != nil {
-    log.Printf("订阅失败: %v", err)
-    return
-}
+## 认证
 
-// 处理接收到的消息
-for msg := range ch {
-    log.Printf("收到消息: %s", string(msg))
-}
-```
+GoHub支持基于JWT的认证。可以通过以下方式提供令牌:
+1. 查询参数: `ws://localhost:8080/ws?token=your-jwt-token`
+2. Authorization头: `Authorization: Bearer your-jwt-token`
 
-## 性能调优
+## 代码结构
 
-可以通过调整以下配置参数优化性能：
+- `cmd/gohub/` - 主应用程序入口
+- `internal/` - 内部包
+  - `auth/` - 认证与授权
+  - `bus/` - 消息总线 (NATS实现)
+  - `dispatcher/` - 消息分发
+  - `handlers/` - 消息处理器
+  - `hub/` - 连接和房间管理
+  - `metrics/` - 监控指标
+  - `sdk/` - 服务端SDK
+  - `websocket/` - WebSocket适配层
 
-- `OpTimeout`: 操作超时时间，影响发布和接收速度
-- `ReconnectWait`: 重连等待时间，影响故障恢复速度
-- `MessageRetention`: JetStream消息保留时间
-- `MaxDeliver`: 消息最大重试次数 
+## 贡献
+
+欢迎贡献！请随时提交PR或Issue。
+
+## 许可证
+
+MIT 

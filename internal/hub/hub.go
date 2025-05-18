@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"gohub/internal/bus"
 	"log/slog"
@@ -15,11 +16,12 @@ var (
 
 // Hub 管理WebSocket客户端连接和消息分发
 type Hub struct {
-	clients sync.Map // key=id, value=*Client
-	bus     bus.MessageBus
-	cfg     Config
-	ctx     context.Context
-	cancel  context.CancelFunc
+	clients     sync.Map     // key=id, value=*Client
+	roomManager *RoomManager // 添加房间管理器
+	bus         bus.MessageBus
+	cfg         Config
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // 主题常量
@@ -47,6 +49,9 @@ func NewHub(messageBus bus.MessageBus, cfg Config) *Hub {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+
+	// 初始化房间管理器
+	h.roomManager = NewRoomManager(ctx, messageBus)
 
 	if messageBus != nil {
 		h.setupBusSubscriptions(ctx)
@@ -246,19 +251,93 @@ func (h *Hub) GetClientCount() int {
 	return count
 }
 
+// 以下是房间相关操作的便捷方法
+
+// CreateRoom 创建一个新房间
+func (h *Hub) CreateRoom(id, name string, maxClients int) (*Room, error) {
+	return h.roomManager.CreateRoom(id, name, maxClients)
+}
+
+// DeleteRoom 删除一个房间
+func (h *Hub) DeleteRoom(id string) error {
+	return h.roomManager.DeleteRoom(id)
+}
+
+// GetRoom 获取一个房间
+func (h *Hub) GetRoom(id string) (*Room, error) {
+	return h.roomManager.GetRoom(id)
+}
+
+// ListRooms 列出所有房间
+func (h *Hub) ListRooms() []*Room {
+	return h.roomManager.ListRooms()
+}
+
+// JoinRoom 将客户端加入房间
+func (h *Hub) JoinRoom(roomID string, clientID string) error {
+	// 获取客户端
+	clientObj, ok := h.clients.Load(clientID)
+	if !ok {
+		return ErrClientNotFound
+	}
+
+	client := clientObj.(*Client)
+	return h.roomManager.JoinRoom(roomID, client)
+}
+
+// LeaveRoom 客户端离开房间
+func (h *Hub) LeaveRoom(roomID string, clientID string) error {
+	return h.roomManager.LeaveRoom(roomID, clientID)
+}
+
+// BroadcastToRoom 向房间内所有客户端广播消息
+func (h *Hub) BroadcastToRoom(roomID string, frame Frame, excludeClientID string) error {
+	// 如果启用了消息总线，并且消息总线不为空
+	if h.bus != nil {
+		// 构造房间消息（这里可以扩展，添加更多元数据）
+		roomMsg := map[string]interface{}{
+			"room_id": roomID,
+			"data":    frame.Data,
+			"exclude": excludeClientID,
+			"type":    "room_broadcast",
+		}
+
+		// 序列化消息
+		msgData, err := json.Marshal(roomMsg)
+		if err != nil {
+			slog.Error("failed to marshal room message", "error", err)
+			return err
+		}
+
+		// 通过总线发布房间消息
+		ctx, cancel := context.WithTimeout(context.Background(), h.cfg.BusTimeout)
+		defer cancel()
+
+		topic := FormatRoomTopic(roomID)
+		if err := h.bus.Publish(ctx, topic, msgData); err != nil {
+			slog.Warn("failed to publish room message via bus", "error", err)
+			// 继续本地广播，不要返回错误
+		}
+	}
+
+	// 执行本地房间广播
+	return h.roomManager.BroadcastToRoom(roomID, frame.Data, excludeClientID)
+}
+
 // Close 关闭Hub及其所有客户端连接
 func (h *Hub) Close() error {
 	h.cancel()
 
 	// 关闭所有客户端连接
-	h.clients.Range(func(_, v interface{}) bool {
+	h.clients.Range(func(k, v interface{}) bool {
 		client := v.(*Client)
+		// 这将触发OnClose回调，从而调用Hub.Unregister
 		client.shutdown()
 		return true
 	})
 
-	// 清空客户端映射
-	h.clients = sync.Map{}
+	// 关闭房间管理器
+	h.roomManager.Close()
 
 	// 关闭消息总线
 	if h.bus != nil {
@@ -266,4 +345,12 @@ func (h *Hub) Close() error {
 	}
 
 	return nil
+}
+
+// GetClient 获取指定ID的客户端
+func (h *Hub) GetClient(id string) (*Client, error) {
+	if client, ok := h.clients.Load(id); ok {
+		return client.(*Client), nil
+	}
+	return nil, ErrClientNotFound
 }

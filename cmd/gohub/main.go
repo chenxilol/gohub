@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"gohub/internal/auth"
 	"gohub/internal/bus"
 	hub_nats "gohub/internal/bus/nats"
 	"gohub/internal/dispatcher"
 	"gohub/internal/handlers"
 	hub2 "gohub/internal/hub"
+	"gohub/internal/metrics"
+	"gohub/internal/sdk"
 	myws "gohub/internal/websocket"
 	"log/slog"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/viper"
 
 	"github.com/google/uuid"
@@ -59,6 +63,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 初始化默认指标
+	metrics.Default()
+
 	var messageBus bus.MessageBus
 	if config.Cluster.Enabled {
 		slog.Info("Cluster mode enabled, using message bus")
@@ -69,6 +76,9 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// 创建认证服务
+	authService := auth.NewJWTService(config.Auth.SecretKey, config.Auth.Issuer)
 
 	// 创建Hub
 	hubConfig := hub2.Config{
@@ -82,34 +92,111 @@ func main() {
 	wsHub := hub2.NewHub(messageBus, hubConfig)
 	defer wsHub.Close()
 
+	// 创建SDK
+	gohubSDK := sdk.NewSDK(wsHub)
+
 	// 注册消息处理函数
 	d := dispatcher.GetDispatcher()
 	handlers.RegisterHandlers(d)
 
+	// 添加Prometheus指标接口
+	http.Handle("/metrics", promhttp.HandlerFor(
+		metrics.GetRegistry(),
+		promhttp.HandlerOpts{},
+	))
+
 	// HTTP处理函数：WebSocket连接入口
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			slog.Error("Failed to upgrade connection", "error", err)
+		// 获取并验证认证令牌
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			token = r.Header.Get("Authorization")
+			// 移除Bearer前缀（如果存在）
+			if strings.HasPrefix(token, "Bearer ") {
+				token = token[7:]
+			}
+		}
+
+		// 验证令牌
+		var claims *auth.TokenClaims
+		var authErr error
+		if token != "" {
+			claims, authErr = authService.Authenticate(r.Context(), token)
+			if authErr != nil {
+				slog.Error("Authentication failed", "error", authErr)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				metrics.RecordAuthFailure()
+				return
+			}
+			metrics.RecordAuthSuccess()
+		} else if !config.Auth.AllowAnonymous {
+			// 如果不允许匿名访问且没有提供令牌，则拒绝连接
+			slog.Warn("WebSocket connection attempt without token")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			metrics.RecordAuthFailure()
 			return
 		}
 
-		// 获取客户端ID（从URL参数、认证令牌或生成一个）
-		clientID := r.URL.Query().Get("client_id")
-		if clientID == "" {
-			clientID = generateClientID()
+		// 升级连接为WebSocket
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			slog.Error("Failed to upgrade connection", "error", err)
+			metrics.RecordError()
+			return
+		}
+
+		// 获取客户端ID
+		var clientID string
+		if claims != nil {
+			// 如果有认证信息，使用用户ID作为客户端ID
+			clientID = claims.UserID
+		} else {
+			// 否则从查询参数获取，或生成一个
+			clientID = r.URL.Query().Get("client_id")
+			if clientID == "" {
+				clientID = generateClientID()
+			}
 		}
 
 		// 创建WebSocket客户端
 		wsConn := myws.NewGorillaConn(conn)
 		client := hub2.NewClient(ctx, clientID, wsConn, hubConfig, func(id string) {
 			wsHub.Unregister(id)
+			metrics.ClientDisconnected()
 		}, d)
+
+		// 如果有认证声明，保存到客户端
+		if claims != nil {
+			client.SetAuthClaims(claims)
+		}
 
 		// 注册到Hub
 		wsHub.Register(client)
+		metrics.ClientConnected()
 
-		slog.Info("New WebSocket connection established", "client_id", clientID)
+		// 触发SDK客户端连接事件
+		go gohubSDK.TriggerEvent(ctx, sdk.Event{
+			Type:     sdk.EventClientConnected,
+			ClientID: clientID,
+			Time:     time.Now(),
+			Claims:   claims,
+		})
+
+		slog.Info("New WebSocket connection established",
+			"client_id", clientID,
+			"authenticated", claims != nil,
+			"username", func() string {
+				if claims != nil {
+					return claims.Username
+				}
+				return "anonymous"
+			}())
+	})
+
+	// 健康检查端点
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok","version":"` + config.Version + `"}`))
 	})
 
 	// 启动HTTP服务器
@@ -172,6 +259,16 @@ type Config struct {
 			KeyPrefix   string        `mapstructure:"key_prefix"`
 		} `mapstructure:"etcd"`
 	} `mapstructure:"cluster"`
+
+	Auth struct {
+		Enabled        bool   `mapstructure:"enabled"`
+		SecretKey      string `mapstructure:"secret_key"`
+		Issuer         string `mapstructure:"issuer"`
+		AllowAnonymous bool   `mapstructure:"allow_anonymous"`
+	} `mapstructure:"auth"`
+
+	// 添加版本字段
+	Version string `mapstructure:"version"`
 }
 
 // 加载配置
@@ -191,6 +288,15 @@ func loadConfig(configFile string) (Config, error) {
 
 	if err := viper.Unmarshal(&config); err != nil {
 		return config, err
+	}
+
+	// 设置默认值
+	if config.Auth.SecretKey == "" {
+		config.Auth.SecretKey = "default-secret-key-change-this-in-production"
+	}
+
+	if config.Auth.Issuer == "" {
+		config.Auth.Issuer = "gohub"
 	}
 
 	return config, nil

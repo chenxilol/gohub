@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"gohub/internal/auth"
 	"log/slog"
 	"sync"
 	"time"
@@ -27,6 +28,8 @@ type Client struct {
 	onClose    func(string) // 关闭时的回调函数
 	closed     sync.Once
 	dispatcher MessageDispatcher // 添加 dispatcher 接口字段
+	authClaims *auth.TokenClaims // 认证声明（如果已认证）
+	metadata   sync.Map          // 客户端元数据，用于存储自定义信息
 }
 
 // WSConn 解耦WebSocket连接接口，便于测试
@@ -198,6 +201,11 @@ func (c *Client) shutdown() {
 	})
 }
 
+// Shutdown 公开的安全关闭客户端连接方法
+func (c *Client) Shutdown() {
+	c.shutdown()
+}
+
 // IsUnexpectedCloseError 判断是否为非预期的WebSocket关闭错误
 func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 	if websocket.IsCloseError(err, expectedCodes...) {
@@ -215,4 +223,43 @@ func IsWebsocketCloseError(err error) bool {
 		websocket.CloseNormalClosure,
 		websocket.CloseGoingAway,
 		websocket.CloseNoStatusReceived)
+}
+
+// SetAuthClaims 设置客户端的认证声明
+func (c *Client) SetAuthClaims(claims *auth.TokenClaims) {
+	c.authClaims = claims
+}
+
+// GetAuthClaims 获取客户端的认证声明
+func (c *Client) GetAuthClaims() *auth.TokenClaims {
+	return c.authClaims
+}
+
+// IsAuthenticated 检查客户端是否已认证
+func (c *Client) IsAuthenticated() bool {
+	return c.authClaims != nil
+}
+
+// HasPermission 检查客户端是否具有特定权限
+func (c *Client) HasPermission(permission auth.Permission) bool {
+	if c.authClaims == nil {
+		return false
+	}
+
+	return auth.HasPermission(c.authClaims, permission)
+}
+
+// SetMetadata 设置客户端元数据
+func (c *Client) SetMetadata(key string, value interface{}) {
+	c.metadata.Store(key, value)
+}
+
+// GetMetadata 获取客户端元数据
+func (c *Client) GetMetadata(key string) (interface{}, bool) {
+	return c.metadata.Load(key)
+}
+
+// DeleteMetadata 删除客户端元数据
+func (c *Client) DeleteMetadata(key string) {
+	c.metadata.Delete(key)
 }

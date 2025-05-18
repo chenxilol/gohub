@@ -1,3 +1,9 @@
+# GoHub 配置文件
+
+# 版本信息
+version: "1.0.0"
+
+# 服务器配置
 server:
   addr: ":8080"                       # 服务监听地址
   read_timeout: 3m                    # 读取超时
@@ -6,9 +12,13 @@ server:
   write_buffer_size: 4096             # 写缓冲区大小(bytes)
   message_buffer_cap: 256             # 消息缓冲队列容量
 
+# 集群配置
 cluster:
-  enabled: true                      # 是否启用集群模式
-  etcd:                               # etcd配置
-    endpoints: ["http://etcd:2379"]   # etcd节点地址
-    dial_timeout: 5s                  # 连接超时
-    key_prefix: "/gohub"              # 键前缀 
+  enabled: false
+
+# 认证配置
+auth:
+  enabled: true
+  secret_key: "test-secret-key-change-this-in-production"
+  issuer: "gohub"
+  allow_anonymous: true 

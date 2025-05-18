@@ -1,0 +1,49 @@
+# GoHub 配置文件示例
+
+# 版本信息
+version: "1.0.0"
+
+# 服务器配置
+server:
+  addr: ":8080"                  # HTTP服务监听地址
+  read_timeout: 60s              # WebSocket读取超时
+  write_timeout: 10s             # WebSocket写入超时
+  read_buffer_size: 4096         # 读取缓冲区大小 (字节)
+  write_buffer_size: 4096        # 写入缓冲区大小 (字节)
+  message_buffer_cap: 256        # 消息队列容量 (消息数)
+
+# 集群配置
+cluster:
+  enabled: false                 # 是否启用集群模式
+  etcd:                          # etcd配置 (用于服务发现)
+    endpoints:
+      - "localhost:2379"
+    dial_timeout: 5s
+    key_prefix: "/gohub/nodes/"
+
+# 认证配置
+auth:
+  enabled: true                  # 是否启用认证
+  secret_key: "your-secret-key-change-this"  # JWT密钥
+  issuer: "gohub"                # JWT签发者
+  allow_anonymous: true          # 是否允许匿名连接
+  
+# 日志配置
+log:
+  level: "debug"                 # 日志级别: debug, info, warn, error
+  format: "json"                 # 日志格式: json, text
+
+# NATS配置 (消息总线)
+nats:
+  urls:
+    - "nats://localhost:4222" 
+  username: ""                   # NATS认证用户名 (可选)
+  password: ""                   # NATS认证密码 (可选)
+  token: ""                      # NATS认证令牌 (可选)
+  reconnect_wait: 2s             # 重连等待时间
+  max_reconnects: -1             # 最大重连次数 (-1表示无限)
+  connection_timeout: 5s         # 连接超时
+  use_jetstream: false           # 是否使用JetStream
+  stream_name: "GOHUB"           # JetStream流名称
+  consumer_name: "gohub-consumer" # JetStream消费者名称
+  message_retention: 1h          # 消息保留时间 
