@@ -143,7 +143,7 @@ func main() {
 		}
 
 		// 将Hub实例添加到上下文中
-		requestCtxWithHub := context.WithValue(r.Context(), "hub", wsHub)
+		requestCtxWithHub := context.WithValue(context.Background(), "hub", wsHub)
 
 		requestCtxWithHub.Value("hub")
 

@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"fmt"
 	"gohub/internal/auth"
 	"log/slog"
 	"sync"
@@ -108,7 +107,6 @@ func (c *Client) Send(f Frame) error {
 	}
 }
 
-// readLoop 处理从客户端读取数据
 func (c *Client) readLoop() {
 	defer func() {
 		c.shutdown()
@@ -120,43 +118,20 @@ func (c *Client) readLoop() {
 	for {
 		msgType, message, err := c.conn.ReadMessage()
 		if err != nil {
-			if IsUnexpectedCloseError(err,
-				websocket.CloseGoingAway,
-				websocket.CloseNormalClosure) {
-				slog.Info("read error", "error", err, "client", c.id)
-			}
 			break
 		}
+		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
-		// 更新读取超时
-		_ = c.conn.SetReadDeadline(time.Now().Add(c.cfg.ReadTimeout))
-
-		// 处理特殊的控制消息
 		if msgType == websocket.PingMessage || msgType == websocket.PongMessage {
-			continue
-		}
-
-		// 通常，JSON消息会以 TextMessage 类型发送
-		// 如果是二进制消息，并且您的协议支持，也可以处理
-		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
 			slog.Warn("received unexpected message type for routing", "type", msgType, "client", c.id)
 			continue
 		}
 
-		// 使用 dispatcher 处理消息
-		if c.dispatcher == nil {
-			slog.Error("dispatcher not initialized for client", "client", c.id)
-			continue
-		}
 		if err := c.dispatcher.DecodeAndRoute(c.ctx, c, message); err != nil {
-			slog.Error("failed to decode or route message", "error", err, "client", c.id)
-			// 考虑根据错误类型决定是否关闭连接
-			// 例如，如果错误是 json.Unmarshal 相关的，可能是无效的消息格式
 		}
 	}
 }
 
-// writeLoop 处理向客户端写入数据
 func (c *Client) writeLoop() {
 	defer func() {
 		c.shutdown()
@@ -169,14 +144,12 @@ func (c *Client) writeLoop() {
 
 		case frame, ok := <-c.out:
 			if !ok {
-				// 通道关闭，发送关闭消息
-				_ = c.conn.WriteMessage(websocket.CloseMessage, nil)
 				return
 			}
 
 			_ = c.conn.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
-			err := c.conn.WriteMessage(frame.MsgType, frame.Data)
 
+			err := c.conn.WriteMessage(frame.MsgType, frame.Data)
 			if frame.Ack != nil {
 				frame.Ack <- err
 			}
