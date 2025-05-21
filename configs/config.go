@@ -54,7 +54,7 @@ func NewDefaultConfig() Config {
 	config.Server.Hub.MessageBufferCap = 256
 
 	// 集群默认配置
-	config.Cluster.Enabled = false
+	config.Cluster.Enabled = true
 
 	// NATS默认配置
 	config.Cluster.NATS.URLs = []string{"nats://localhost:4222"}

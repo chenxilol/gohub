@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"gohub/configs"
 	"gohub/internal/auth"
 	"gohub/internal/bus"
@@ -31,6 +33,7 @@ import (
 
 var (
 	configFile = flag.String("config", "configs/config.yaml", "配置文件路径")
+	port       = flag.Int("port", 0, "服务监听端口，如果指定，将覆盖配置文件中的设置")
 )
 
 var upgrader = websocket.Upgrader{
@@ -182,6 +185,41 @@ func main() {
 			}())
 	})
 
+	// 新增：广播API端点
+	http.HandleFunc("/api/broadcast", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var msg struct {
+			Message string `json:"message"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if msg.Message == "" {
+			http.Error(w, "Message content cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		// 构造Frame
+		frame := hub.Frame{
+			MsgType: websocket.TextMessage, // 假设广播的是文本消息
+			Data:    []byte(msg.Message),
+		}
+
+		// 执行广播
+		wsHub.Broadcast(frame)
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"broadcast initiated"}`))
+		slog.Info("Broadcast API called", "message", msg.Message)
+	})
+
 	// 健康检查端点
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -190,7 +228,7 @@ func main() {
 
 	// 启动HTTP服务器
 	srv := &http.Server{
-		Addr:    config.Server.Addr,
+		Addr:    getServerAddr(&config, *port),
 		Handler: nil, // 使用默认的ServeMux
 	}
 
@@ -230,4 +268,17 @@ func main() {
 // 生成客户端ID
 func generateClientID() string {
 	return uuid.New().String()
+}
+
+// getServerAddr 根据配置和命令行参数获取服务监听地址
+func getServerAddr(config *configs.Config, cliPort int) string {
+	addr := config.Server.Addr
+	if cliPort != 0 {
+		host := strings.Split(addr, ":")[0]
+		if host == "" {
+			host = "0.0.0.0" // 默认为监听所有接口
+		}
+		addr = fmt.Sprintf("%s:%d", host, cliPort)
+	}
+	return addr
 }

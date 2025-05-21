@@ -21,7 +21,7 @@ var (
 	ErrClientAlreadyInRoom = errors.New("client already in room")
 )
 
-// 格式化房间主题
+// RoomTopicPrefix 格式化房间主题
 const (
 	RoomTopicPrefix = "room/"
 )

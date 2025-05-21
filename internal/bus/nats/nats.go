@@ -37,7 +37,7 @@ func DefaultConfig() Config {
 		ReconnectWait:    2 * time.Second,
 		MaxReconnects:    -1, // 无限重连
 		ConnectTimeout:   5 * time.Second,
-		OpTimeout:        10 * time.Millisecond,
+		OpTimeout:        1 * time.Second, // 从10ms增加到1s，提供更合理的操作超时时间
 		UseJetStream:     false,
 		StreamName:       "GOHUB",
 		ConsumerName:     "gohub-consumer",

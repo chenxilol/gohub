@@ -266,7 +266,7 @@ func (h *Hub) subscribeClientUnicast(clientID, topic string) {
 
 				// 检查客户端是否已断开连接
 				if _, exists := h.clients.Load(clientID); !exists {
-					slog.Info("client disconnected before unicast subscription completed", "client", clientID)
+					slog.Info("client no longer connected, stopping unicast subscription", "client", clientID)
 					return
 				}
 
@@ -285,6 +285,13 @@ func (h *Hub) subscribeClientUnicast(clientID, topic string) {
 			case msg, ok := <-unicastCh:
 				if !ok {
 					slog.Warn("unicast channel closed, resubscribing", "client", clientID)
+
+					// 检查客户端是否已断开连接
+					if _, exists := h.clients.Load(clientID); !exists {
+						slog.Info("client no longer connected, stopping unicast subscription", "client", clientID)
+						return
+					}
+
 					break
 				}
 

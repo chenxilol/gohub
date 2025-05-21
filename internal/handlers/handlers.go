@@ -261,10 +261,11 @@ func handleDirectMessage(ctx context.Context, client *hub.Client, data json.RawM
 	metrics.MessageSent(float64(len(msgData)))
 
 	// 发送消息到目标客户端
-	if err := h.Push(dmRequest.TargetID, hub.Frame{
-		MsgType: 1,
-		Data:    msgData,
-	}); err != nil {
+	if err := h.
+		Push(dmRequest.TargetID, hub.Frame{
+			MsgType: 1,
+			Data:    msgData,
+		}); err != nil {
 		// 处理错误
 		code := hub.MapErrorToCode(err)
 		return hub.SendError(client, hub.NewError(code, "Failed to deliver message: "+err.Error(), 0, nil))
