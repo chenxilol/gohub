@@ -2,6 +2,7 @@ package configs
 
 import (
 	"gohub/internal/bus/nats"
+	"gohub/internal/bus/redis"
 	"gohub/internal/hub"
 	"strings"
 	"time"
@@ -18,8 +19,10 @@ type Server struct {
 }
 
 type Cluster struct {
-	Enabled bool        `mapstructure:"enabled"`
-	NATS    nats.Config `mapstructure:"nats"`
+	Enabled bool         `mapstructure:"enabled"`
+	BusType string       `mapstructure:"bus_type"` // 消息总线类型: "nats", "redis", "noop"
+	NATS    nats.Config  `mapstructure:"nats"`
+	Redis   redis.Config `mapstructure:"redis"`
 }
 
 type Auth struct {
@@ -55,6 +58,7 @@ func NewDefaultConfig() Config {
 
 	// 集群默认配置
 	config.Cluster.Enabled = true
+	config.Cluster.BusType = "nats" // 默认使用 NATS
 
 	// NATS默认配置
 	config.Cluster.NATS.URLs = []string{"nats://localhost:4222"}
@@ -67,6 +71,9 @@ func NewDefaultConfig() Config {
 	config.Cluster.NATS.StreamName = "GOHUB"
 	config.Cluster.NATS.ConsumerName = "gohub-consumer"
 	config.Cluster.NATS.MessageRetention = 1 * time.Hour
+
+	// Redis默认配置
+	config.Cluster.Redis = redis.DefaultConfig()
 
 	// 认证默认配置
 	config.Auth.Enabled = false

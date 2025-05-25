@@ -21,10 +21,12 @@ type MessageBus interface {
 	// Subscribe 订阅指定主题，返回接收channel
 	Subscribe(ctx context.Context, topic string) (<-chan []byte, error)
 
+	// SubscribeWithTimestamp 订阅指定主题，返回带时间戳的消息channel
+	SubscribeWithTimestamp(ctx context.Context, topic string) (<-chan *Message, error)
+
 	// Unsubscribe 取消订阅主题
 	Unsubscribe(topic string) error
 
-	// Close 关闭消息总线
 	Close() error
 }
 

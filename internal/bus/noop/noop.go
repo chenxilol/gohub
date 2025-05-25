@@ -56,6 +56,24 @@ func (n *NoopBus) Subscribe(ctx context.Context, topic string) (<-chan []byte, e
 	return ch, nil
 }
 
+// SubscribeWithTimestamp 实现MessageBus.SubscribeWithTimestamp，返回一个立即关闭的通道
+func (n *NoopBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-chan *bus.Message, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.closed {
+		return nil, bus.ErrBusClosed
+	}
+
+	if topic == "" {
+		return nil, bus.ErrTopicEmpty
+	}
+
+	// 创建一个非关闭的通道，不会有消息被发送到这个通道
+	ch := make(chan *bus.Message)
+	return ch, nil
+}
+
 // Unsubscribe 实现MessageBus.Unsubscribe，不做任何操作
 func (n *NoopBus) Unsubscribe(topic string) error {
 	n.mu.Lock()

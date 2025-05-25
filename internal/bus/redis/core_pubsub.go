@@ -6,31 +6,31 @@ import (
 	"gohub/internal/bus"
 )
 
-// Publish 实现MessageBus.Publish，通过Redis发布消息
 func (r *RedisBus) Publish(ctx context.Context, topic string, data []byte) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// 检查是否已关闭
 	if r.closed {
 		return bus.ErrBusClosed
 	}
 
-	// 检查主题是否为空
 	if topic == "" {
 		return bus.ErrTopicEmpty
 	}
 
-	// 创建一个带超时的上下文
-	// 如果原始上下文已有超时，则使用较短的那个超时
+	msg := bus.NewMessage(data)
+	msgData, err := msg.Marshal()
+	if err != nil {
+		r.IncPublishErrors()
+		return bus.ErrPublishFailed
+	}
+
 	publishCtx, cancel := context.WithTimeout(ctx, r.cfg.OpTimeout)
 	defer cancel()
 
-	// 使用Redis的PUBLISH命令发布消息
 	formattedTopic := r.formatKey(topic)
-	cmd := r.client.Publish(publishCtx, formattedTopic, data)
+	cmd := r.client.Publish(publishCtx, formattedTopic, msgData)
 	if err := cmd.Err(); err != nil {
-		// 增加发布错误计数
 		r.IncPublishErrors()
 		return bus.ErrPublishFailed
 	}
@@ -94,6 +94,39 @@ func (r *RedisBus) Subscribe(ctx context.Context, topic string) (<-chan []byte, 
 
 	// 启动后台goroutine处理订阅
 	go r.subscribeRoutine(subCtx, formattedTopic, outCh)
+
+	return outCh, nil
+}
+
+// SubscribeWithTimestamp 实现MessageBus.SubscribeWithTimestamp，订阅Redis频道并返回带时间戳的消息
+func (r *RedisBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-chan *bus.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// 检查是否已关闭
+	if r.closed {
+		return nil, bus.ErrBusClosed
+	}
+
+	// 检查主题是否为空
+	if topic == "" {
+		return nil, bus.ErrTopicEmpty
+	}
+
+	// 格式化主题名称
+	formattedTopic := r.formatKey(topic)
+
+	// 创建输出通道，使用缓冲区避免阻塞
+	outCh := make(chan *bus.Message, 100)
+
+	// 创建一个可取消的上下文，用于控制订阅goroutine的生命周期
+	subCtx, cancel := context.WithCancel(ctx)
+
+	// 记录取消函数，以便后续可以取消订阅
+	r.subs[topic+"_timestamp"] = cancel
+
+	// 启动后台goroutine处理订阅
+	go r.subscribeRoutineWithTimestamp(subCtx, formattedTopic, outCh)
 
 	return outCh, nil
 }

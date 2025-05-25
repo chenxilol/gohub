@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"gohub/internal/bus"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -263,4 +265,9 @@ func TestCluster_Integration(t *testing.T) {
 	}
 
 	// 不使用Fatalf确保所有测试步骤都能执行完并留下日志
+}
+
+func (m *EnhancedMockBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-chan *bus.Message, error) {
+	ch := make(chan *bus.Message)
+	return ch, nil
 }

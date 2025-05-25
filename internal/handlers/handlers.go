@@ -23,7 +23,6 @@ const (
 
 // RegisterHandlers 注册所有消息处理函数到分发器
 func RegisterHandlers(d *dispatcher.Dispatcher) {
-	// 注册所有处理函数
 	d.Register(MsgTypePing, handlePing)
 	d.Register(MsgTypeJoinRoom, handleJoinRoom)
 	d.Register(MsgTypeLeaveRoom, handleLeaveRoom)
@@ -75,7 +74,7 @@ func handlePing(ctx context.Context, client *hub.Client, data json.RawMessage) e
 	}
 
 	return client.Send(hub.Frame{
-		MsgType: 1, // 文本消息
+		MsgType: 1,
 		Data:    respData,
 	})
 }

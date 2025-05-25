@@ -55,6 +55,15 @@ var (
 			Buckets: prometheus.DefBuckets,
 		},
 	)
+
+	// subscribeLatency 记录订阅消息延迟
+	subscribeLatency = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "gohub_bus_nats_subscribe_latency_seconds",
+			Help:    "NATS消息总线订阅延迟(秒)",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
 )
 
 // 注册指标
@@ -66,6 +75,7 @@ func init() {
 	prometheus.MustRegister(reconnectsCounter)
 	prometheus.MustRegister(ackPendingGauge)
 	prometheus.MustRegister(publishLatency)
+	prometheus.MustRegister(subscribeLatency)
 }
 
 // IncPublishErrors 增加发布错误计数
@@ -96,4 +106,9 @@ func (n *NatsBus) UpdateAckPending(count int) {
 // ObservePublishLatency 观察发布延迟
 func (n *NatsBus) ObservePublishLatency(d time.Duration) {
 	publishLatency.Observe(d.Seconds())
+}
+
+// ObserveSubscribeLatency 观察订阅延迟
+func (n *NatsBus) ObserveSubscribeLatency(d time.Duration) {
+	subscribeLatency.Observe(d.Seconds())
 }

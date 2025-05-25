@@ -18,48 +18,44 @@ var (
 	ErrPublishAckTimeout = errors.New("publish acknowledgement timeout")
 )
 
-// Publish 实现MessageBus.Publish，通过NATS发布消息
 func (n *NatsBus) Publish(ctx context.Context, topic string, data []byte) error {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// 检查是否已关闭
 	if n.closed {
 		return bus.ErrBusClosed
 	}
 
-	// 检查主题是否为空
 	if topic == "" {
 		return bus.ErrTopicEmpty
 	}
 
-	// 创建一个带超时的上下文，对JetStream使用更长的超时时间
+	msg := bus.NewMessage(data)
+	msgData, err := msg.Marshal()
+	if err != nil {
+		n.IncPublishErrors()
+		return bus.ErrPublishFailed
+	}
+
 	opTimeout := n.cfg.OpTimeout
 	if n.cfg.UseJetStream && n.js != nil {
-		// JetStream发布可能需要更长的时间
-		opTimeout = 5 * time.Second // 增加JetStream的超时时间
+		opTimeout = 5 * time.Second
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 
-	// 发布消息的通道
 	errCh := make(chan error, 1)
 
-	// 在goroutine中发布消息，避免阻塞
 	go func() {
 		var err error
 		if n.cfg.UseJetStream && n.js != nil {
-			// 使用唯一前缀构建完整主题
 			fullTopic := topic
 			if n.streamSubject != "" {
 				fullTopic = n.streamSubject + "." + topic
 			}
 
-			// 记录开始时间，用于计算发布延迟
 			startTime := time.Now()
 
-			// 使用JetStream发布，并等待PubAck确认
-			// 对于JetStream增加额外的重试次数
 			var ack *nats.PubAck
 			var innerErr error
 			maxRetries := 8 // 增加重试次数
@@ -71,7 +67,7 @@ func (n *NatsBus) Publish(ctx context.Context, topic string, data []byte) error 
 				ackOpt := nats.AckWait(2 * time.Second) // 增加确认等待时间
 
 				slog.Debug("attempting jetstream publish", "attempt", i+1, "topic", fullTopic)
-				ack, innerErr = n.js.Publish(fullTopic, data, ackOpt)
+				ack, innerErr = n.js.Publish(fullTopic, msgData, ackOpt)
 				if innerErr == nil && ack != nil && ack.Sequence > 0 {
 					slog.Debug("jetstream publish successful",
 						"sequence", ack.Sequence,
@@ -112,7 +108,7 @@ func (n *NatsBus) Publish(ctx context.Context, topic string, data []byte) error 
 			}
 		} else {
 			// 使用标准NATS发布
-			err = n.conn.Publish(topic, data)
+			err = n.conn.Publish(topic, msgData)
 			if err != nil {
 				n.IncPublishErrors()
 				slog.Error("standard nats publish failed", "error", err, "topic", topic)
@@ -491,4 +487,312 @@ func (n *NatsBus) Unsubscribe(topic string) error {
 	}
 
 	return nil
+}
+
+// SubscribeWithTimestamp 实现MessageBus.SubscribeWithTimestamp，订阅NATS主题并返回带时间戳的消息
+func (n *NatsBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-chan *bus.Message, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// 检查是否已关闭
+	if n.closed {
+		return nil, bus.ErrBusClosed
+	}
+
+	// 检查主题是否为空
+	if topic == "" {
+		return nil, bus.ErrTopicEmpty
+	}
+
+	// 创建输出通道，使用缓冲区避免阻塞
+	outCh := make(chan *bus.Message, 100)
+
+	// 根据配置选择订阅方式
+	var sub *nats.Subscription
+	var err error
+
+	if n.cfg.UseJetStream && n.js != nil {
+		// 使用JetStream订阅
+		sub, err = n.subscribeJetStreamWithTimestamp(topic, outCh)
+	} else {
+		// 使用标准NATS订阅
+		sub, err = n.subscribeStandardWithTimestamp(topic, outCh)
+	}
+
+	if err != nil {
+		close(outCh)
+		return nil, err
+	}
+
+	// 保存订阅对象，以便后续取消订阅
+	n.subs[topic+"_timestamp"] = sub
+
+	// 启动goroutine监控上下文取消
+	go func() {
+		<-ctx.Done()
+		n.Unsubscribe(topic + "_timestamp")
+	}()
+
+	// 启动goroutine定期更新Pending消息数量（仅限JetStream）
+	if n.cfg.UseJetStream && n.js != nil {
+		go n.monitorPendingMessages(sub, topic)
+	}
+
+	slog.Info("subscribed to nats topic with timestamp", "topic", topic)
+	return outCh, nil
+}
+
+// subscribeStandardWithTimestamp 使用标准NATS订阅并解析时间戳
+func (n *NatsBus) subscribeStandardWithTimestamp(topic string, outCh chan<- *bus.Message) (*nats.Subscription, error) {
+	// 使用通道订阅，NATS会自动将消息发送到msgCh
+	msgCh := make(chan *nats.Msg, 100)
+	sub, err := n.conn.ChanSubscribe(topic, msgCh)
+	if err != nil {
+		return nil, err
+	}
+
+	// 创建一个停止通道，用于通知处理goroutine退出
+	stopCh := make(chan struct{})
+
+	// 保存停止通道的引用，以便在取消订阅时关闭它
+	n.stopChans[topic+"_timestamp"] = stopCh
+
+	// 启动goroutine处理接收到的消息
+	go func() {
+		defer close(outCh) // 确保在退出时关闭输出通道
+		for {
+			select {
+			case <-stopCh:
+				// 收到停止信号，退出goroutine
+				return
+			case msg, ok := <-msgCh:
+				if !ok {
+					// 消息通道已关闭，说明订阅已取消
+					return
+				}
+
+				// 解析带时间戳的消息
+				message, err := bus.UnmarshalMessage(msg.Data)
+				if err != nil {
+					slog.Error("failed to unmarshal message with timestamp",
+						"topic", topic, "error", err)
+					n.IncSubscribeErrors()
+					continue
+				}
+
+				// 计算并记录消息延迟
+				latency := message.Latency()
+				n.ObserveSubscribeLatency(latency)
+				slog.Debug("message received with latency",
+					"topic", topic,
+					"latency_ms", latency.Milliseconds(),
+					"timestamp", message.Timestamp)
+
+				// 发送到输出通道
+				select {
+				case outCh <- message:
+					// 消息已发送
+				case <-time.After(n.cfg.OpTimeout):
+					// 如果输出通道阻塞，记录警告
+					slog.Warn("timeout sending message to subscriber channel", "topic", topic)
+					n.IncSubscribeErrors()
+				}
+			}
+		}
+	}()
+
+	return sub, nil
+}
+
+// subscribeJetStreamWithTimestamp 使用JetStream订阅并解析时间戳
+func (n *NatsBus) subscribeJetStreamWithTimestamp(topic string, outCh chan<- *bus.Message) (*nats.Subscription, error) {
+	// 创建唯一的消费者名称，避免在测试中冲突
+	consumerName := fmt.Sprintf("%s-%s-ts-%d", n.cfg.ConsumerName, topic, time.Now().UnixNano())
+
+	// 使用流的唯一前缀构建完整主题
+	fullTopic := topic
+	if n.streamSubject != "" {
+		fullTopic = n.streamSubject + "." + topic
+	}
+
+	// 创建或获取消费者，使用持久化消费者确保消息至少被处理一次
+	subOpts := []nats.SubOpt{
+		nats.AckExplicit(),             // 手动确认
+		nats.DeliverAll(),              // 接收所有可用消息
+		nats.MaxDeliver(5),             // 增加重新投递尝试次数
+		nats.AckWait(60 * time.Second), // 增加确认等待时间
+		nats.MaxAckPending(1000),       // 设置最大确认等待数
+		nats.ManualAck(),               // 强制手动确认
+	}
+
+	slog.Info("creating jetstream subscription with timestamp", "topic", fullTopic, "consumer", consumerName)
+
+	// 使用PullSubscribe，让消费者控制获取速率
+	sub, err := n.js.PullSubscribe(fullTopic, consumerName, subOpts...)
+	if err != nil {
+		slog.Error("failed to create jetstream subscription", "error", err, "topic", fullTopic)
+		return nil, err
+	}
+
+	// 创建一个停止通道，用于通知处理goroutine退出
+	stopCh := make(chan struct{})
+
+	// 保存停止通道的引用，以便在取消订阅时关闭它
+	n.stopChans[topic+"_timestamp"] = stopCh
+
+	// 启动goroutine处理接收到的消息
+	go func() {
+		defer close(outCh) // 确保在退出时关闭输出通道
+
+		batchSize := 10             // 每次获取的消息数量
+		waitTime := 1 * time.Second // 最长等待时间
+
+		// 添加统计和恢复机制
+		consecutiveErrors := 0
+		maxConsecutiveErrors := 10
+		backoffFactor := 1
+
+		for {
+			// 检查停止信号
+			select {
+			case <-stopCh:
+				slog.Info("jetstream subscription worker stopping", "topic", topic)
+				return
+			default:
+				// 继续处理
+			}
+
+			// 批量获取消息
+			msgs, err := sub.Fetch(batchSize, nats.MaxWait(waitTime))
+			if err != nil {
+				if errors.Is(err, nats.ErrTimeout) {
+					// 超时是正常的，检查是否有停止信号
+					consecutiveErrors = 0 // 重置错误计数
+					continue
+				}
+
+				// 针对严重错误立即退出
+				if errors.Is(err, nats.ErrConnectionClosed) ||
+					errors.Is(err, nats.ErrDrainTimeout) ||
+					errors.Is(err, nats.ErrBadSubscription) {
+					// 连接已关闭或订阅已失效，退出循环
+					slog.Info("stopping jetstream subscription due to connection error",
+						"error", err, "topic", topic)
+					return
+				}
+
+				consecutiveErrors++
+				n.IncSubscribeErrors()
+				slog.Error("error fetching messages",
+					"error", err,
+					"topic", topic,
+					"consecutive_errors", consecutiveErrors)
+
+				// 如果连续错误太多，增加退避时间或考虑重置订阅
+				if consecutiveErrors >= maxConsecutiveErrors {
+					slog.Error("too many consecutive fetch errors, sleeping before retry",
+						"topic", topic,
+						"errors", consecutiveErrors)
+					// 指数退避策略
+					time.Sleep(time.Duration(backoffFactor) * 500 * time.Millisecond)
+					if backoffFactor < 10 {
+						backoffFactor *= 2
+					}
+				} else {
+					// 常规错误暂停
+					time.Sleep(200 * time.Millisecond)
+				}
+
+				continue
+			}
+
+			// 成功获取消息，重置错误计数和退避
+			consecutiveErrors = 0
+			backoffFactor = 1
+
+			// 如果成功获取消息但数组为空，继续尝试
+			if len(msgs) == 0 {
+				continue
+			}
+
+			// 处理获取到的消息
+			for _, msg := range msgs {
+				// 检查停止信号
+				select {
+				case <-stopCh:
+					// 尝试确认消息避免重新投递
+					if err := msg.Ack(); err != nil {
+						slog.Debug("failed to ack message during shutdown", "error", err)
+					}
+					slog.Info("jetstream message handler stopping", "topic", topic)
+					return
+				default:
+					// 继续处理
+				}
+
+				// 解析带时间戳的消息
+				message, err := bus.UnmarshalMessage(msg.Data)
+				if err != nil {
+					slog.Error("failed to unmarshal message with timestamp",
+						"topic", topic, "error", err)
+					n.IncSubscribeErrors()
+					// 确认消息以避免重新投递
+					if err := msg.Ack(); err != nil {
+						slog.Error("failed to ack invalid message", "error", err)
+						n.IncAckErrors()
+					}
+					continue
+				}
+
+				// 计算并记录消息延迟
+				latency := message.Latency()
+				n.ObserveSubscribeLatency(latency)
+
+				// 记录接收消息的元数据，用于调试
+				meta, err := msg.Metadata()
+				if err == nil && meta.NumDelivered > 1 {
+					// 只记录重新投递的消息，减少日志量
+					slog.Debug("received redelivered jetstream message with timestamp",
+						"topic", topic,
+						"sequence", meta.Sequence.Stream,
+						"timestamp", meta.Timestamp,
+						"delivery_count", meta.NumDelivered,
+						"latency_ms", latency.Milliseconds())
+				} else {
+					slog.Debug("message received with latency",
+						"topic", topic,
+						"latency_ms", latency.Milliseconds(),
+						"timestamp", message.Timestamp)
+				}
+
+				// 发送到输出通道
+				select {
+				case outCh <- message:
+					// 消息已成功发送到通道，确认消息
+					if err := msg.Ack(); err != nil {
+						slog.Error("failed to ack message", "error", err)
+						n.IncAckErrors()
+					}
+				case <-time.After(300 * time.Millisecond): // 增加发送超时时间
+					// 如果输出通道阻塞，记录警告并延迟重新投递
+					slog.Warn("timeout sending message to subscriber channel", "topic", topic)
+					n.IncSubscribeErrors()
+					// 尝试稍后重新投递
+					if err := msg.NakWithDelay(2 * time.Second); err != nil {
+						slog.Error("failed to nak message", "error", err)
+						n.IncAckErrors()
+					}
+				case <-stopCh:
+					// 收到停止信号，退出
+					// 尝试确认消息避免重新投递
+					if err := msg.Ack(); err != nil {
+						slog.Debug("failed to ack message during shutdown", "error", err)
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	return sub, nil
 }

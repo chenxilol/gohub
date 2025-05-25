@@ -183,7 +183,6 @@ func New(cfg Config) (*RedisBus, error) {
 	return rb, nil
 }
 
-// formatKey 使用配置的前缀格式化Redis键
 func (r *RedisBus) formatKey(topic string) string {
 	return r.cfg.KeyPrefix + topic
 }

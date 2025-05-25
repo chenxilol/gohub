@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"gohub/internal/bus"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +151,39 @@ func (b *ClusterMockBus) Close() error {
 	b.closed = true
 	fmt.Printf("ClusterMockBus: Closed\n")
 	return nil
+}
+
+// SubscribeWithTimestamp 实现MessageBus.SubscribeWithTimestamp
+func (b *ClusterMockBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-chan *bus.Message, error) {
+	b.Lock()
+	defer b.Unlock()
+
+	if b.closed {
+		return nil, fmt.Errorf("bus is closed")
+	}
+
+	ch := make(chan *bus.Message, 20)
+
+	// 将通道添加到订阅者列表
+	if _, exists := b.subs[topic]; !exists {
+		b.subs[topic] = make([]chan []byte, 0)
+	}
+	// 用于兼容测试，直接用[]byte通道转发
+	rawCh := make(chan []byte, 20)
+	b.subs[topic] = append(b.subs[topic], rawCh)
+
+	// 转发并自动加上时间戳
+	go func() {
+		for data := range rawCh {
+			ch <- &bus.Message{
+				Timestamp: time.Now(),
+				Data:      data,
+			}
+		}
+		close(ch)
+	}()
+
+	return ch, nil
 }
 
 // T2：集群广播（2个节点）- 两个节点的客户端都能收到
