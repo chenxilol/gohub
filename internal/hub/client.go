@@ -17,12 +17,11 @@ var (
 	ErrSendBufferFull = errors.New("send buffer full")
 )
 
-// Client 表示一个WebSocket客户端连接
 type Client struct {
-	id         string          // 客户端唯一标识
-	conn       WSConn          // WebSocket连接
-	out        chan Frame      // 发送消息队列
-	ctx        context.Context // 上下文用于取消
+	id         string     // 客户端唯一标识
+	conn       WSConn     // WebSocket连接
+	out        chan Frame // 发送消息队列
+	ctx        context.Context
 	cancel     context.CancelFunc
 	cfg        Config       // 配置选项
 	onClose    func(string) // 关闭时的回调函数
@@ -43,7 +42,6 @@ type WSConn interface {
 	Close() error
 }
 
-// Config 客户端配置选项
 type Config struct {
 	ReadTimeout      time.Duration `mapstructure:"read_timeout" json:"read_timeout"`
 	WriteTimeout     time.Duration `mapstructure:"write_timeout" json:"write_timeout"`
@@ -53,7 +51,6 @@ type Config struct {
 	BusTimeout       time.Duration `mapstructure:"bus_timeout" json:"bus_timeout"`
 }
 
-// DefaultConfig 返回默认配置
 func DefaultConfig() Config {
 	return Config{
 		ReadTimeout:      3 * time.Minute,
@@ -65,7 +62,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// NewClient 创建一个新的客户端
 func NewClient(ctx context.Context, id string, conn WSConn, cfg Config, onClose func(string), dispatcher MessageDispatcher) *Client {
 	clientCtx, cancel := context.WithCancel(ctx)
 
@@ -87,7 +83,6 @@ func NewClient(ctx context.Context, id string, conn WSConn, cfg Config, onClose 
 	return client
 }
 
-// ID 获取客户端ID
 func (c *Client) ID() string {
 	return c.id
 }
@@ -120,7 +115,7 @@ func (c *Client) readLoop() {
 		if err != nil {
 			break
 		}
-		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = c.conn.SetReadDeadline(time.Now().Add(c.cfg.ReadTimeout))
 
 		if msgType == websocket.PingMessage || msgType == websocket.PongMessage {
 			slog.Warn("received unexpected message type for routing", "type", msgType, "client", c.id)
@@ -166,25 +161,18 @@ func (c *Client) writeLoop() {
 func (c *Client) shutdown() {
 	c.closed.Do(func() {
 		c.cancel()
-
-		// 在关闭连接前执行回调，通知Hub移除客户端
 		if c.onClose != nil {
 			c.onClose(c.id)
 		}
-
-		// 关闭连接
 		_ = c.conn.Close()
-
 		slog.Info("client disconnected", "id", c.id)
 	})
 }
 
-// Shutdown 公开的安全关闭客户端连接方法
 func (c *Client) Shutdown() {
 	c.shutdown()
 }
 
-// IsUnexpectedCloseError 判断是否为非预期的WebSocket关闭错误
 func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 	if websocket.IsCloseError(err, expectedCodes...) {
 		return false
@@ -195,7 +183,6 @@ func IsUnexpectedCloseError(err error, expectedCodes ...int) bool {
 	return true
 }
 
-// IsWebsocketCloseError 判断是否为正常的WebSocket关闭错误
 func IsWebsocketCloseError(err error) bool {
 	return websocket.IsCloseError(err,
 		websocket.CloseNormalClosure,

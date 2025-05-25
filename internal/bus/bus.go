@@ -1,4 +1,3 @@
-// Package bus 提供节点间消息传递机制
 package bus
 
 import (
@@ -28,15 +27,4 @@ type MessageBus interface {
 	Unsubscribe(topic string) error
 
 	Close() error
-}
-
-// 主题常量
-const (
-	BroadcastTopic = "broadcast" // 广播消息
-	UnicastPrefix  = "unicast/"  // 单播前缀
-)
-
-// FormatUnicastTopic 格式化单播主题
-func FormatUnicastTopic(clientID string) string {
-	return UnicastPrefix + clientID
 }

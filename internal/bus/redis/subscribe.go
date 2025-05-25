@@ -15,7 +15,6 @@ import (
 func (r *RedisBus) subscribeRoutine(ctx context.Context, topic string, outCh chan<- []byte) {
 	var retryCount int32
 
-	// 使用defer确保在函数退出时关闭输出通道
 	defer close(outCh)
 
 	for {

@@ -35,7 +35,7 @@ func (r *RedisBus) Publish(ctx context.Context, topic string, data []byte) error
 		return bus.ErrPublishFailed
 	}
 
-	// PUBLISH命令返回接收消息的客户端数量
+	// TODO PUBLISH命令返回接收消息的客户端数量
 	// 这可以用来确认是否有订阅者
 	// 但在Redis PubSub模型中，没有订阅者也是正常的，不应视为错误
 	return nil
@@ -70,29 +70,20 @@ func (r *RedisBus) Subscribe(ctx context.Context, topic string) (<-chan []byte, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 检查是否已关闭
 	if r.closed {
 		return nil, bus.ErrBusClosed
 	}
 
-	// 检查主题是否为空
 	if topic == "" {
 		return nil, bus.ErrTopicEmpty
 	}
 
-	// 格式化主题名称
 	formattedTopic := r.formatKey(topic)
 
-	// 创建输出通道，使用缓冲区避免阻塞
 	outCh := make(chan []byte, 100)
-
-	// 创建一个可取消的上下文，用于控制订阅goroutine的生命周期
 	subCtx, cancel := context.WithCancel(ctx)
-
-	// 记录取消函数，以便后续可以取消订阅
 	r.subs[topic] = cancel
 
-	// 启动后台goroutine处理订阅
 	go r.subscribeRoutine(subCtx, formattedTopic, outCh)
 
 	return outCh, nil
@@ -103,29 +94,22 @@ func (r *RedisBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// 检查是否已关闭
 	if r.closed {
 		return nil, bus.ErrBusClosed
 	}
 
-	// 检查主题是否为空
 	if topic == "" {
 		return nil, bus.ErrTopicEmpty
 	}
 
-	// 格式化主题名称
 	formattedTopic := r.formatKey(topic)
 
-	// 创建输出通道，使用缓冲区避免阻塞
 	outCh := make(chan *bus.Message, 100)
 
-	// 创建一个可取消的上下文，用于控制订阅goroutine的生命周期
 	subCtx, cancel := context.WithCancel(ctx)
 
-	// 记录取消函数，以便后续可以取消订阅
 	r.subs[topic+"_timestamp"] = cancel
 
-	// 启动后台goroutine处理订阅
 	go r.subscribeRoutineWithTimestamp(subCtx, formattedTopic, outCh)
 
 	return outCh, nil

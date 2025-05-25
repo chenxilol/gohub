@@ -39,7 +39,7 @@ func DefaultRedisDistributedConfig() RedisDistributedTestConfig {
 type NodeInfo struct {
 	ID        string
 	Port      int
-	Server    *GoHubServer
+	Server    *AppServer
 	SDK       *sdk.GoHubSDK
 	Running   bool
 	ConnCount int64
@@ -243,7 +243,7 @@ func createMultipleNodes(testConfig RedisDistributedTestConfig) ([]*NodeInfo, er
 		config.Cluster.Redis.PoolSize = 20
 
 		// 创建服务器
-		server, err := NewGoHubServer(&config)
+		server, err := NewAppServer(&config)
 		if err != nil {
 			// 清理已创建的节点
 			for _, node := range nodes {
@@ -258,7 +258,7 @@ func createMultipleNodes(testConfig RedisDistributedTestConfig) ([]*NodeInfo, er
 			ID:      nodeID,
 			Port:    port,
 			Server:  server,
-			SDK:     server.GetSDK(),
+			SDK:     server.gohubSDK,
 			Running: true,
 		}
 

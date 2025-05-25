@@ -8,7 +8,6 @@ import (
 	"gohub/internal/bus"
 )
 
-// NoopBus 是一个空操作的消息总线实现，直接丢弃消息
 // 适用于单节点模式，不需要跨节点通信
 type NoopBus struct {
 	closed bool

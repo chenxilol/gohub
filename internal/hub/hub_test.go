@@ -199,12 +199,10 @@ func (md *mockDispatcher) DecodeAndRoute(ctx context.Context, client *Client, da
 	if md.decodeAndRouteFunc != nil {
 		return md.decodeAndRouteFunc(ctx, client, data)
 	}
-	// 默认情况下，mock dispatcher 什么也不做，或者只记录一个debug日志（可选）
-	// slog.Debug("mockDispatcher: DecodeAndRoute called", "client", client.ID())
 	return nil
 }
+func (md *mockDispatcher) Register(name string, handler MessageHandlerFunc) {}
 
-// newMockDispatcher 创建一个新的 mock dispatcher 实例
 func newMockDispatcher() *mockDispatcher {
 	return &mockDispatcher{}
 }

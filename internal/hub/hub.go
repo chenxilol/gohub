@@ -33,29 +33,28 @@ type Hub struct {
 	nodeID       string               // 节点ID，用于标识不同的Hub实例
 }
 
-// 主题常量
 const (
 	BroadcastTopic = "broadcast" // 广播消息
 	UnicastPrefix  = "unicast/"  // 单播前缀
 )
 
-// FormatUnicastTopic 格式化单播主题
 func FormatUnicastTopic(clientID string) string {
 	return UnicastPrefix + clientID
 }
 
-// WithBusTimeout Config 中添加总线超时配置
 func (c *Config) WithBusTimeout(timeout time.Duration) *Config {
 	c.BusTimeout = timeout
 	return c
 }
 
 func NewHub(messageBus bus.MessageBus, cfg Config) *Hub {
+	if messageBus == nil {
+		slog.Error("message bus is nil, hub will not work correctly")
+		return nil
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// 生成唯一的节点ID
 	nodeID := generateNodeID()
-
 	h := &Hub{
 		bus:          messageBus,
 		cfg:          cfg,
@@ -65,18 +64,13 @@ func NewHub(messageBus bus.MessageBus, cfg Config) *Hub {
 		deduplicator: NewMessageDeduplicator(nodeID, 30*time.Second),
 	}
 
-	// 初始化房间管理器，并传递去重器
-	h.roomManager = NewRoomManager(ctx, messageBus)
-
-	if messageBus != nil {
-		h.setupBusSubscriptions(ctx)
-	}
+	h.roomManager = NewRoomManager(ctx, messageBus, h.deduplicator)
+	h.setupBusSubscriptions(ctx)
 
 	slog.Info("Hub initialized", "node_id", nodeID)
 	return h
 }
 
-// generateNodeID 生成唯一的节点标识
 func generateNodeID() string {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -86,10 +80,7 @@ func generateNodeID() string {
 }
 
 // processBroadcastMessages 处理从给定的广播通道接收消息，直到上下文完成或通道关闭。
-// 如果上下文取消或通道关闭，则返回错误。
 func (h *Hub) processBroadcastMessages(ctx context.Context, broadcastCh <-chan []byte) error {
-	slog.Debug("starting to process broadcast messages from bus")
-	defer slog.Debug("stopped processing broadcast messages from bus")
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,21 +88,15 @@ func (h *Hub) processBroadcastMessages(ctx context.Context, broadcastCh <-chan [
 		case msg, ok := <-broadcastCh:
 			if !ok {
 				slog.Warn("broadcast channel from bus closed")
-				return errors.New("broadcast channel closed") // 通知调用者通道已关闭
+				return errors.New("broadcast channel closed")
 			}
 			h.processBusMessage(msg)
 		}
 	}
 }
 
-// setupBusSubscriptions 设置消息总线订阅
 func (h *Hub) setupBusSubscriptions(ctx context.Context) {
-	// 订阅广播主题
 	go func() {
-		const maxSubRetries = 5
-		const initialSubBackoff = 1 * time.Second
-		const maxSubBackoff = 30 * time.Second
-
 		var broadcastCh <-chan []byte
 		subscribeToBus := func() error {
 			var err error
@@ -119,7 +104,7 @@ func (h *Hub) setupBusSubscriptions(ctx context.Context) {
 			return err
 		}
 
-		for { // 无限循环，用于在通道关闭时尝试重新订阅
+		for {
 			select {
 			case <-ctx.Done():
 				slog.Info("context done, stopping broadcast subscription routine")
@@ -127,50 +112,33 @@ func (h *Hub) setupBusSubscriptions(ctx context.Context) {
 			default:
 			}
 
-			slog.Info("attempting to establish subscription to broadcast topic")
-			err := utils.RetryWithBackoff(ctx, "bus_broadcast_subscribe", maxSubRetries, initialSubBackoff, maxSubBackoff, subscribeToBus)
+			err := utils.RetryWithBackoff(ctx, "bus_broadcast_subscribe", 5, time.Second, time.Minute, subscribeToBus)
 
 			if err != nil {
-				// 所有重试都失败了，这是一个严重问题
 				slog.Error("failed to subscribe to broadcast topic after multiple retries, broadcast won't be received from bus", "error", err)
 				metrics.RecordCriticalError("failed_to_subscribe_broadcast")
-				// 此处返回将终止此 goroutine，Hub 将无法从总线接收广播
 				return
 			}
 
-			slog.Info("successfully subscribed to broadcast topic, now processing messages")
-
-			// 订阅成功，开始处理来自 broadcastCh 的消息
-			processingErr := h.processBroadcastMessages(ctx, broadcastCh)
-
-			// processBroadcastMessages 在 ctx 完成或通道关闭时返回
-			if processingErr != nil {
+			if processingErr := h.processBroadcastMessages(ctx, broadcastCh); processingErr != nil {
 				if errors.Is(processingErr, context.Canceled) || errors.Is(processingErr, context.DeadlineExceeded) {
 					slog.Info("broadcast message processing stopped due to context completion", "reason", processingErr)
 					return
 				}
-				// 通道关闭或处理期间发生其他意外错误。记录日志并循环以尝试重新订阅。
-				slog.Warn("broadcast message processing ended, will attempt to resubscribe", "reason", processingErr)
-			} else {
-				// processingErr == nil 的情况理论上由 processBroadcastMessages 返回 errors.New("broadcast channel closed") 覆盖
-				slog.Info("broadcast message processing finished, will attempt to resubscribe")
 			}
-			// 如果执行到这里，说明消息处理停止了（例如通道关闭），并且上下文尚未完成。
-			// 再次循环以重新建立订阅。
-			// （可选）可以在重新尝试订阅之前添加短暂延迟，以防止在 bus.Subscribe 快速失败但返回一个很快关闭的通道时发生快速轮询。
-			// 为保持与原始行为一致，此处不添加额外延迟。
+
+			slog.Info("broadcast message processing finished, will attempt to resubscribe")
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 }
 
-// processBusMessage 处理从消息总线接收的消息
 func (h *Hub) processBusMessage(data []byte) {
 	var busMsg BusMessage
 	if err := json.Unmarshal(data, &busMsg); err != nil {
 		slog.Error("failed to unmarshal bus message", "error", err)
 		frame := Frame{
-			MsgType: 1, // 文本消息
+			MsgType: websocket.TextMessage,
 			Data:    data,
 		}
 		h.localBroadcast(frame)
@@ -192,7 +160,7 @@ func (h *Hub) processBusMessage(data []byte) {
 	case "broadcast":
 		// 创建广播帧
 		frame := Frame{
-			MsgType: 1, // 默认为文本消息
+			MsgType: websocket.TextMessage,
 			Data:    busMsg.Payload,
 		}
 
@@ -268,7 +236,7 @@ func (h *Hub) processUnicastMessages(ctx context.Context, clientID string, unica
 
 			// 发送消息到客户端
 			frame := Frame{
-				MsgType: 1, // 文本消息
+				MsgType: websocket.TextMessage,
 				Data:    msg,
 			}
 			if err := client.(*Client).Send(frame); err != nil {
@@ -281,10 +249,6 @@ func (h *Hub) processUnicastMessages(ctx context.Context, clientID string, unica
 
 // subscribeClientUnicast 为客户端订阅单播消息
 func (h *Hub) subscribeClientUnicast(clientID, topic string) {
-	const maxSubRetries = 5
-	const initialSubBackoff = 500 * time.Millisecond
-	const maxSubBackoff = 10 * time.Second
-
 	var unicastCh <-chan []byte
 	subscribeToUnicast := func() error {
 		var err error
@@ -300,53 +264,30 @@ func (h *Hub) subscribeClientUnicast(clientID, topic string) {
 		default:
 		}
 
-		// 检查客户端是否仍然连接
 		if _, exists := h.clients.Load(clientID); !exists {
 			slog.Info("client no longer connected, stopping unicast subscription", "client", clientID)
 			return
 		}
 
 		slog.Debug("attempting to establish unicast subscription", "client", clientID, "topic", topic)
-		err := utils.RetryWithBackoff(h.ctx,
-			fmt.Sprintf("unicast_subscribe_%s", clientID),
-			maxSubRetries,
-			initialSubBackoff,
-			maxSubBackoff,
-			subscribeToUnicast)
+		err := utils.RetryWithBackoff(h.ctx, fmt.Sprintf("unicast_subscribe_%s", clientID), 5, 500*time.Millisecond, 10*time.Second, subscribeToUnicast)
 
 		if err != nil {
-			slog.Error("failed to subscribe to unicast topic after multiple retries",
-				"topic", topic,
-				"client", clientID,
-				"error", err)
+			slog.Error("failed to subscribe to unicast topic after multiple retries", "topic", topic, "client", clientID, "error", err)
 			return
 		}
 
 		slog.Debug("successfully subscribed to unicast topic", "topic", topic, "client", clientID)
 
-		// 订阅成功，开始处理来自 unicastCh 的消息
 		processingErr := h.processUnicastMessages(h.ctx, clientID, unicastCh)
 
-		// processUnicastMessages 在 ctx 完成、通道关闭或客户端断开时返回
 		if processingErr != nil {
 			if errors.Is(processingErr, context.Canceled) || errors.Is(processingErr, context.DeadlineExceeded) {
 				slog.Info("unicast message processing stopped due to context completion", "client", clientID, "reason", processingErr)
 				return
 			}
-
-			if processingErr.Error() == "client disconnected" {
-				slog.Info("unicast message processing stopped due to client disconnection", "client", clientID)
-				_ = h.bus.Unsubscribe(topic)
-				return
-			}
-
-			// 通道关闭，记录日志并循环以尝试重新订阅
-			slog.Warn("unicast message processing ended, will attempt to resubscribe", "client", clientID, "reason", processingErr)
-		} else {
-			slog.Info("unicast message processing finished, will attempt to resubscribe", "client", clientID)
 		}
 
-		// 短暂延迟以避免快速重连循环
 		time.Sleep(100 * time.Millisecond)
 	}
 }
@@ -354,7 +295,6 @@ func (h *Hub) subscribeClientUnicast(clientID, topic string) {
 // Unregister 从Hub移除客户端
 func (h *Hub) Unregister(id string) {
 	if _, exists := h.clients.LoadAndDelete(id); exists {
-		// 如果正在使用消息总线，取消单播订阅
 		if h.bus != nil {
 			_ = h.bus.Unsubscribe(FormatUnicastTopic(id))
 		}
@@ -430,12 +370,9 @@ func (h *Hub) Broadcast(f Frame) {
 // prepareJsonPayload 准备消息的JSON载荷
 func prepareJsonPayload(f Frame) (json.RawMessage, error) {
 	if f.MsgType == websocket.TextMessage {
-		// 检查数据是否已经是有效的JSON
 		if json.Valid(f.Data) {
 			return f.Data, nil
 		}
-
-		// 不是有效的JSON，将其作为字符串值处理
 		jsonString, err := json.Marshal(string(f.Data))
 		if err != nil {
 			return nil, fmt.Errorf("marshal message content to JSON string: %w", err)
@@ -552,19 +489,13 @@ func (h *Hub) BroadcastToRoom(roomID string, frame Frame, excludeClientID string
 // Close 关闭Hub及其所有客户端连接
 func (h *Hub) Close() error {
 	h.cancel()
-
-	// 关闭所有客户端连接
 	h.clients.Range(func(k, v interface{}) bool {
 		client := v.(*Client)
-		// 这将触发OnClose回调，从而调用Hub.Unregister
 		client.shutdown()
 		return true
 	})
 
-	// 关闭房间管理器
 	h.roomManager.Close()
-
-	// 关闭消息总线
 	if h.bus != nil {
 		return h.bus.Close()
 	}
@@ -572,7 +503,6 @@ func (h *Hub) Close() error {
 	return nil
 }
 
-// GetClient 获取指定ID的客户端
 func (h *Hub) GetClient(id string) (*Client, error) {
 	if client, ok := h.clients.Load(id); ok {
 		return client.(*Client), nil

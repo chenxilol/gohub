@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"gohub/internal/auth"
-	"gohub/internal/dispatcher"
 	"gohub/internal/hub"
 	"gohub/internal/metrics"
 	"log/slog"
@@ -22,7 +21,7 @@ const (
 )
 
 // RegisterHandlers 注册所有消息处理函数到分发器
-func RegisterHandlers(d *dispatcher.Dispatcher) {
+func RegisterHandlers(d hub.MessageDispatcher) {
 	d.Register(MsgTypePing, handlePing)
 	d.Register(MsgTypeJoinRoom, handleJoinRoom)
 	d.Register(MsgTypeLeaveRoom, handleLeaveRoom)

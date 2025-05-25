@@ -97,3 +97,4 @@ func (md *mockDispatcher) DecodeAndRoute(ctx context.Context, client *hub.Client
 func newMockDispatcher() *mockDispatcher {
 	return &mockDispatcher{}
 }
+func (md *mockDispatcher) Register(name string, handler hub.MessageHandlerFunc) {}

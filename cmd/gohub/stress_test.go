@@ -63,13 +63,13 @@ func TestExtremeRoomCreation(t *testing.T) {
 	config.Cluster.Enabled = false
 	config.Auth.AllowAnonymous = true
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 	stressConfig := ExtremeStressConfig()
 
 	t.Logf("开始极端房间创建测试: %d 个房间, %d 个并发工作者",
@@ -140,13 +140,13 @@ func TestHighFrequencyBroadcast(t *testing.T) {
 	config.Cluster.Enabled = false
 	config.Auth.AllowAnonymous = true
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 	stressConfig := DefaultStressConfig()
 
 	t.Logf("开始高频广播测试: %d 消息/秒, 持续 %v",
@@ -201,7 +201,7 @@ func TestHighFrequencyBroadcast(t *testing.T) {
 	printTestStats("高频广播测试", stats, totalDuration)
 }
 
-// 大量房间操作压力测试 - 重新设计版本
+// 大量房间操作压力测试
 func TestMassiveRoomOperations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("跳过压力测试 (使用 -short 标志)")
@@ -211,13 +211,13 @@ func TestMassiveRoomOperations(t *testing.T) {
 	config.Cluster.Enabled = false
 	config.Auth.AllowAnonymous = true
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 	stressConfig := ExtremeStressConfig()
 
 	t.Logf("开始大量房间操作测试: %d 个房间, 持续 %v",
@@ -428,13 +428,13 @@ func TestMemoryLeakDetection(t *testing.T) {
 	config.Cluster.Enabled = false
 	config.Auth.AllowAnonymous = true
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 
 	t.Logf("开始内存泄漏检测测试...")
 
@@ -493,13 +493,13 @@ func TestLongTermStability(t *testing.T) {
 	config.Cluster.Enabled = false
 	config.Auth.AllowAnonymous = true
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 
 	// 长时间测试配置（可以根据需要调整）
 	testDuration := 5 * time.Minute
@@ -615,13 +615,13 @@ func BenchmarkExtremeRoomCreation(b *testing.B) {
 	config := configs.NewDefaultConfig()
 	config.Cluster.Enabled = false
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		b.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -638,13 +638,13 @@ func BenchmarkConcurrentBroadcast(b *testing.B) {
 	config := configs.NewDefaultConfig()
 	config.Cluster.Enabled = false
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		b.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 	message := []byte("Concurrent broadcast test message")
 
 	b.ResetTimer()
@@ -659,13 +659,13 @@ func BenchmarkMixedOperations(b *testing.B) {
 	config := configs.NewDefaultConfig()
 	config.Cluster.Enabled = false
 
-	server, err := NewGoHubServer(&config)
+	server, err := NewAppServer(&config)
 	if err != nil {
 		b.Fatalf("Failed to create server: %v", err)
 	}
 	defer server.Shutdown(context.Background())
 
-	sdk := server.GetSDK()
+	sdk := server.gohubSDK
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

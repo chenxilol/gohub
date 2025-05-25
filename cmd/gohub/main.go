@@ -11,7 +11,7 @@ import (
 	"gohub/internal/bus"
 	hubnats "gohub/internal/bus/nats"
 	"gohub/internal/bus/noop"
-	hubreds "gohub/internal/bus/redis"
+	hubredis "gohub/internal/bus/redis"
 	"gohub/internal/dispatcher"
 	"gohub/internal/handlers"
 	"gohub/internal/hub"
@@ -23,7 +23,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -34,225 +33,255 @@ import (
 )
 
 var (
-	configFile = flag.String("config", "configs/config.yaml", "配置文件路径")
-	port       = flag.Int("port", 0, "服务监听端口，如果指定，将覆盖配置文件中的设置")
+	configFile = flag.String("config", "path/to/your/app-config.yaml", "应用程序配置文件路径")
+	appPort    = flag.Int("port", 8080, "应用程序服务监听端口")
 )
 
-var upgrader = websocket.Upgrader{
+// globalUpgrader 用于将 HTTP 连接升级到 WebSocket
+var globalUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
+		// 在生产环境中，这里应该有更严格的来源检查
 		return true
 	},
 }
 
-// GoHubServer 封装服务器逻辑，使其更易于测试和集成
-type GoHubServer struct {
-	config      *configs.Config
-	authService *auth.JWTService
-	wsHub       *hub.Hub
-	gohubSDK    *sdk.GoHubSDK
-	dispatcher  *dispatcher.Dispatcher
-	srv         *http.Server
+// AppServer 封装了使用 GoHub 库的应用程序服务器
+type AppServer struct {
+	config        *configs.Config       // GoHub 的配置结构
+	authService   *auth.JWTService      // JWT 认证服务
+	gohubSDK      *sdk.GoHubSDK         // GoHub SDK 实例
+	httpServer    *http.Server          // HTTP 服务器
+	messageBus    bus.MessageBus        // 消息总线实例
+	hubInstance   *hub.Hub              // GoHub Hub 核心实例
+	appDispatcher hub.MessageDispatcher // GoHub 消息分发器接口
 }
 
-// NewGoHubServer 创建新的服务器实例
-func NewGoHubServer(config *configs.Config) (*GoHubServer, error) {
-	// 初始化消息总线
-	var messageBus bus.MessageBus
+// NewAppServer 创建并初始化一个新的应用程序服务器实例
+func NewAppServer(cfg *configs.Config) (*AppServer, error) {
 	var err error
-	if config.Cluster.Enabled {
-		slog.Info("Cluster mode enabled, using message bus", "bus_type", config.Cluster.BusType)
-		messageBus, err = createMessageBus(config.Cluster)
+	app := &AppServer{
+		config: cfg,
+	}
+
+	// 1. 初始化消息总线 (根据 GoHub 配置)
+	if cfg.Cluster.Enabled {
+		slog.Info("集群模式已启用，正在创建消息总线", "bus_type", cfg.Cluster.BusType)
+		app.messageBus, err = createMessageBus(cfg.Cluster)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create message bus: %w", err)
+			return nil, fmt.Errorf("创建消息总线失败: %w", err)
 		}
+	} else {
+		slog.Info("集群模式已禁用，使用 NoOpBus")
+		app.messageBus = noop.New()
 	}
 
-	// 创建认证服务
-	authService := auth.NewJWTService(config.Auth.SecretKey, config.Auth.Issuer)
+	app.authService = auth.NewJWTService(cfg.Auth.SecretKey, cfg.Auth.Issuer)
+	app.appDispatcher = dispatcher.GetDispatcher()
 
-	// 创建WebSocket Hub
-	wsHub := hub.NewHub(messageBus, config.Hub)
+	// 4. 初始化 GoHub Hub 核心
+	app.hubInstance = hub.NewHub(app.messageBus, cfg.Hub) //
 
-	// 创建SDK
-	gohubSDK := sdk.NewSDK(wsHub)
+	// 5. 初始化 GoHub SDK，并注入 Hub 和 Dispatcher
+	app.gohubSDK = sdk.NewSDK(app.hubInstance, app.appDispatcher) //
 
-	// 创建分发器并注册处理器
-	d := dispatcher.GetDispatcher()
-	handlers.RegisterHandlers(d)
+	// 6. 注册 GoHub 内置的核心消息处理器 (ping, room join/leave 等)
+	// 这些处理器会注册到 app.appDispatcher 上
+	handlers.RegisterHandlers(app.appDispatcher) //
 
-	server := &GoHubServer{
-		config:      config,
-		authService: authService,
-		wsHub:       wsHub,
-		gohubSDK:    gohubSDK,
-		dispatcher:  d,
-	}
+	// 7. (关键步骤) 通过 SDK 注册应用程序自定义的消息处理器
+	app.registerCustomMessageHandlers()
 
-	// 设置事件监听器
-	server.setupEventHandlers()
+	// 8. 设置应用程序自定义的 SDK 事件处理器 (可选)
+	app.setupCustomSDKEventHandlers()
 
-	// 设置HTTP路由
-	server.setupRoutes()
-
-	return server, nil
-}
-
-// setupEventHandlers 设置SDK事件处理器
-func (s *GoHubServer) setupEventHandlers() {
-	// 客户端连接事件
-	s.gohubSDK.On(sdk.EventClientConnected, func(ctx context.Context, event sdk.Event) error {
-		slog.Info("Client connected via SDK",
-			"client_id", event.ClientID,
-			"authenticated", event.Claims != nil,
-			"time", event.Time)
-		return nil
-	})
-
-	// 客户端断开事件
-	s.gohubSDK.On(sdk.EventClientDisconnected, func(ctx context.Context, event sdk.Event) error {
-		slog.Info("Client disconnected via SDK",
-			"client_id", event.ClientID,
-			"time", event.Time)
-		return nil
-	})
-
-	// 客户端消息事件
-	s.gohubSDK.On(sdk.EventClientMessage, func(ctx context.Context, event sdk.Event) error {
-		slog.Debug("Client message received via SDK",
-			"client_id", event.ClientID,
-			"message_length", len(event.Message))
-		return nil
-	})
-
-	// 房间事件处理
-	s.gohubSDK.On(sdk.EventRoomCreated, func(ctx context.Context, event sdk.Event) error {
-		slog.Info("Room created via SDK", "room_id", event.RoomID)
-		return nil
-	})
-
-	s.gohubSDK.On(sdk.EventRoomJoined, func(ctx context.Context, event sdk.Event) error {
-		slog.Info("Client joined room via SDK",
-			"client_id", event.ClientID,
-			"room_id", event.RoomID)
-		return nil
-	})
-}
-
-// setupRoutes 设置HTTP路由
-func (s *GoHubServer) setupRoutes() {
+	// 9. 设置 HTTP 路由
 	mux := http.NewServeMux()
+	app.setupAppRoutes(mux) // 此函数将包含 WebSocket 端点和可能的其他业务 API 端点
 
-	// Prometheus指标接口
+	app.httpServer = &http.Server{
+		Addr:    getServerAddr(cfg, *appPort), // 使用 appPort 或 cfg 中的端口
+		Handler: mux,
+	}
+
+	return app, nil
+}
+
+func (app *AppServer) registerCustomMessageHandlers() {
+	slog.Info("正在注册应用程序自定义消息处理器...")
+
+	// 示例：注册一个名为 "get_user_profile" 的处理器
+	err := app.gohubSDK.RegisterMessageHandler("get_user_profile", handleGetUserProfile)
+	if err != nil {
+		slog.Error("注册 'get_user_profile' 处理器失败", "error", err)
+		// 根据业务需求决定是否 panic 或记录错误后继续
+	} else {
+		slog.Info("已成功注册自定义消息处理器: get_user_profile")
+	}
+
+	// 示例：注册一个名为 "submit_order" 的处理器
+	err = app.gohubSDK.RegisterMessageHandler("submit_order", handleSubmitOrder)
+	if err != nil {
+		slog.Error("注册 'submit_order' 处理器失败", "error", err)
+	} else {
+		slog.Info("已成功注册自定义消息处理器: submit_order")
+	}
+	// ... 在这里注册更多自定义处理器
+}
+
+// setupCustomSDKEventHandlers 设置应用程序自定义的 SDK 事件回调
+func (app *AppServer) setupCustomSDKEventHandlers() {
+	app.gohubSDK.On(sdk.EventClientConnected, func(ctx context.Context, event sdk.Event) error {
+		slog.Info("应用程序逻辑：客户端已连接", "clientID", event.ClientID, "username", event.Claims.Username)
+		// 例如：可以加载用户数据，更新在线状态等
+		return nil
+	})
+
+	app.gohubSDK.On(sdk.EventClientDisconnected, func(ctx context.Context, event sdk.Event) error {
+		slog.Info("应用程序逻辑：客户端已断开", "clientID", event.ClientID)
+		// 例如：清理用户会话，更新离线状态等
+		return nil
+	})
+
+	// 可以订阅更多事件，如 sdk.EventRoomCreated, sdk.EventClientMessage 等
+}
+
+// setupAppRoutes 设置此应用程序的 HTTP 路由
+func (app *AppServer) setupAppRoutes(mux *http.ServeMux) {
+	// GoHub WebSocket 端点
+	mux.HandleFunc("/ws", app.handleAppWebSocket) // 应用自己的 WebSocket 处理函数
+
+	// GoHub Prometheus 指标端点
 	mux.Handle("/metrics", promhttp.HandlerFor(
-		metrics.GetRegistry(),
+		metrics.GetRegistry(), // 使用 GoHub 的 Prometheus 注册表
 		promhttp.HandlerOpts{},
 	))
 
-	// WebSocket连接入口
-	mux.HandleFunc("/ws", s.handleWebSocket)
+	// GoHub 健康检查端点 (如果希望直接暴露)
+	// 或者应用可以有自己的健康检查，内部调用 GoHub 的某些状态检查
+	mux.HandleFunc("/gohub/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 此处可以添加更多应用层面的健康检查逻辑
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "gohub_version": app.config.Version})
+	})
 
-	// API端点 - 使用SDK进行操作
-	mux.HandleFunc("/api/broadcast", s.handleBroadcast)
-	mux.HandleFunc("/api/stats", s.handleStats)
-	mux.HandleFunc("/api/rooms", s.handleRooms)
-	mux.HandleFunc("/api/clients", s.handleClients)
+	// 应用程序自定义的 HTTP API 端点
+	mux.HandleFunc("/api/app/info", func(w http.ResponseWriter, r *http.Request) {
+		// 示例：使用 GoHub SDK 获取信息
+		clientCount := app.gohubSDK.GetClientCount()
+		roomCount := app.gohubSDK.GetRoomCount()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"appName":          "My Awesome App using GoHub",
+			"gohubClientCount": clientCount,
+			"gohubRoomCount":   roomCount,
+		})
+	})
 
-	// 健康检查端点
-	mux.HandleFunc("/health", s.handleHealth)
-
-	s.srv = &http.Server{
-		Addr:    getServerAddr(s.config, *port),
-		Handler: mux,
-	}
+	// 如果需要，也可以在这里重新暴露 GoHub 的 /api/broadcast, /api/stats 等，
+	// 但通常业务应用会封装这些操作或提供自己的 API。
 }
 
-// handleWebSocket 处理WebSocket连接
-func (s *GoHubServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// 获取并验证认证令牌
+// handleAppWebSocket 是应用程序处理 WebSocket 连接的函数
+// 它利用 GoHub 的核心功能来管理连接和消息
+func (app *AppServer) handleAppWebSocket(w http.ResponseWriter, r *http.Request) {
+	// 1. 认证 (与 GoHub cmd/main.go 中的逻辑类似)
 	token := r.URL.Query().Get("token")
 	if token == "" {
-		token = r.Header.Get("Authorization")
-		if strings.HasPrefix(token, "Bearer ") {
-			token = token[7:]
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimSpace(authHeader[7:])
 		}
 	}
 
-	// 验证令牌
 	var claims *auth.TokenClaims
 	var authErr error
 	if token != "" {
-		claims, authErr = s.authService.Authenticate(r.Context(), token)
+		claims, authErr = app.authService.Authenticate(r.Context(), token)
 		if authErr != nil {
-			slog.Error("Authentication failed", "error", authErr)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			metrics.RecordAuthFailure()
+			slog.Warn("WebSocket 认证失败", "error", authErr, "remoteAddr", r.RemoteAddr)
+			http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
+			metrics.RecordAuthFailure() // 使用 GoHub 的 metrics
 			return
 		}
 		metrics.RecordAuthSuccess()
-	} else if !s.config.Auth.AllowAnonymous {
-		slog.Warn("WebSocket connection attempt without token")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	} else if !app.config.Auth.AllowAnonymous { // 使用 GoHub 的配置
+		slog.Warn("WebSocket 连接尝试，但未提供令牌且不允许匿名访问", "remoteAddr", r.RemoteAddr)
+		http.Error(w, "Unauthorized: Token required", http.StatusUnauthorized)
 		metrics.RecordAuthFailure()
 		return
 	}
 
-	// 升级连接为WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
+	// 2. 升级连接
+	wsGorillaConn, err := globalUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Error("Failed to upgrade connection", "error", err)
+		slog.Error("WebSocket 连接升级失败", "error", err, "remoteAddr", r.RemoteAddr)
 		metrics.RecordError()
 		return
 	}
 
-	// 获取客户端ID
+	// 3. 生成客户端 ID
 	var clientID string
-	if claims != nil {
+	if claims != nil && claims.UserID != "" {
 		clientID = claims.UserID
 	} else {
+		// 如果是匿名用户或 token 中没有 UserID，可以从查询参数获取或生成唯一 ID
 		clientID = r.URL.Query().Get("client_id")
 		if clientID == "" {
-			clientID = generateClientID()
+			clientID = uuid.New().String()
 		}
 	}
 
-	// 创建上下文
-	requestCtxWithHub := context.WithValue(context.Background(), "hub", s.wsHub)
+	// 4. 创建 GoHub Client
+	// 使用 internalwebsocket.NewGorillaConn 包装原始连接
+	wsConnAdapter := internalwebsocket.NewGorillaConn(wsGorillaConn) //
 
-	// 创建WebSocket客户端
-	wsConn := internalwebsocket.NewGorillaConn(conn)
-	client := hub.NewClient(requestCtxWithHub, clientID, wsConn, s.config.Hub, func(id string) {
-		s.wsHub.Unregister(id)
+	// 创建客户端上下文，可以将 Hub 实例或其他应用级信息放入
+	clientCtx := context.WithValue(r.Context(), "app_server_instance", app)
+	clientCtx = context.WithValue(clientCtx, "hub", app.hubInstance) // 确保 handlers 能获取到 Hub
+
+	// 定义 onClose 回调
+	onClientClose := func(id string) {
+		app.hubInstance.Unregister(id)
 		metrics.ClientDisconnected()
-
-		// 触发SDK断开事件
-		s.gohubSDK.TriggerEvent(requestCtxWithHub, sdk.Event{
+		// 触发 SDK 事件
+		app.gohubSDK.TriggerEvent(clientCtx, sdk.Event{
 			Type:     sdk.EventClientDisconnected,
 			ClientID: id,
 			Time:     time.Now(),
+			Claims:   claims, // 可以传递断开时的认证信息
 		})
-	}, s.dispatcher)
-
-	// 如果有认证声明，保存到客户端
-	if claims != nil {
-		client.SetAuthClaims(claims)
+		slog.Info("GoHub 客户端已从 Hub 注销", "clientID", id)
 	}
 
-	// 注册到Hub
-	s.wsHub.Register(client)
+	// 使用 app.appDispatcher (类型为 hub.MessageDispatcher)
+	gohubClient := hub.NewClient(
+		clientCtx,
+		clientID,
+		wsConnAdapter,
+		app.config.Hub, // 使用 GoHub 的 Hub 配置
+		onClientClose,
+		app.appDispatcher, // 传递应用持有的 dispatcher 实例
+	)
+
+	if claims != nil {
+		gohubClient.SetAuthClaims(claims)
+	}
+
+	// 5. 注册客户端到 GoHub Hub
+	app.hubInstance.Register(gohubClient)
 	metrics.ClientConnected()
 
-	// 触发SDK客户端连接事件
-	s.gohubSDK.TriggerEvent(requestCtxWithHub, sdk.Event{
+	// 触发 SDK 连接事件
+	app.gohubSDK.TriggerEvent(clientCtx, sdk.Event{
 		Type:     sdk.EventClientConnected,
 		ClientID: clientID,
 		Time:     time.Now(),
 		Claims:   claims,
 	})
 
-	slog.Info("New WebSocket connection established",
-		"client_id", clientID,
+	slog.Info("新的 WebSocket 客户端已连接并通过 GoHub 进行管理",
+		"clientID", clientID,
 		"authenticated", claims != nil,
 		"username", func() string {
 			if claims != nil {
@@ -262,218 +291,208 @@ func (s *GoHubServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}())
 }
 
-// handleBroadcast 处理广播API - 使用SDK
-func (s *GoHubServer) handleBroadcast(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var msg struct {
-		Message string `json:"message"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if msg.Message == "" {
-		http.Error(w, "Message content cannot be empty", http.StatusBadRequest)
-		return
-	}
-
-	// 使用SDK进行广播
-	if err := s.gohubSDK.BroadcastAll([]byte(msg.Message)); err != nil {
-		slog.Error("Broadcast failed", "error", err)
-		http.Error(w, "Broadcast failed", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"broadcast initiated"}`))
-	slog.Info("Broadcast API called", "message", msg.Message)
+// Start 启动应用程序服务器
+func (app *AppServer) Start() error {
+	slog.Info("正在启动应用程序服务器...", "address", app.httpServer.Addr)
+	return app.httpServer.ListenAndServe()
 }
 
-// handleStats 处理统计信息API - 使用SDK
-func (s *GoHubServer) handleStats(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
-		return
+// Shutdown 优雅地关闭应用程序服务器
+func (app *AppServer) Shutdown(ctx context.Context) error {
+	slog.Info("正在关闭应用程序服务器...")
+
+	// 1. 关闭 GoHub SDK (如果它需要特殊关闭逻辑)
+	if err := app.gohubSDK.Close(); err != nil {
+		slog.Error("关闭 GoHub SDK 失败", "error", err)
+		// 继续关闭其他组件
 	}
 
-	stats := map[string]interface{}{
-		"client_count": s.gohubSDK.GetClientCount(),
-		"room_count":   s.gohubSDK.GetRoomCount(),
-		"timestamp":    time.Now().Unix(),
-		"cluster_mode": s.config.Cluster.Enabled,
+	// 2. 关闭 GoHub Hub 核心
+	// 这会处理所有客户端的断开和资源清理
+	if err := app.hubInstance.Close(); err != nil {
+		slog.Error("关闭 GoHub Hub 失败", "error", err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
-}
-
-// handleRooms 处理房间管理API - 使用SDK
-func (s *GoHubServer) handleRooms(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// 列出所有房间
-		rooms := s.gohubSDK.ListRooms()
-		roomData := make([]map[string]interface{}, len(rooms))
-		for i, room := range rooms {
-			members, _ := s.gohubSDK.GetRoomMembers(room.ID)
-			roomData[i] = map[string]interface{}{
-				"id":           room.ID,
-				"name":         room.Name,
-				"member_count": len(members),
-				"max_clients":  room.MaxClients,
-			}
+	// 3. 关闭消息总线 (如果已初始化)
+	if app.messageBus != nil {
+		if err := app.messageBus.Close(); err != nil {
+			slog.Error("关闭消息总线失败", "error", err)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(roomData)
-
-	case http.MethodPost:
-		// 创建房间
-		var req struct {
-			ID         string `json:"id"`
-			Name       string `json:"name"`
-			MaxClients int    `json:"max_clients"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-
-		if req.MaxClients <= 0 {
-			req.MaxClients = 100 // 默认值
-		}
-
-		if err := s.gohubSDK.CreateRoom(req.ID, req.Name, req.MaxClients); err != nil {
-			http.Error(w, "Failed to create room", http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"status": "room created"})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handleClients 处理客户端管理API - 使用SDK
-func (s *GoHubServer) handleClients(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
-		return
 	}
 
-	// 获取客户端统计信息
-	clientCount := s.gohubSDK.GetClientCount()
+	// 4. 关闭 HTTP 服务器
+	return app.httpServer.Shutdown(ctx)
+}
 
-	response := map[string]interface{}{
-		"total_clients": clientCount,
-		"timestamp":     time.Now().Unix(),
+// --- 自定义消息处理器示例 ---
+
+// handleGetUserProfile 是一个自定义的 WebSocket 消息处理器
+func handleGetUserProfile(ctx context.Context, client *hub.Client, data json.RawMessage) error {
+	slog.Info("处理自定义消息: get_user_profile", "clientID", client.ID(), "payload", string(data))
+
+	// 示例：假设请求中包含 userID
+	var request struct {
+		TargetUserID string `json:"target_user_id"`
+	}
+	if err := json.Unmarshal(data, &request); err != nil {
+		slog.Error("解析 get_user_profile 数据失败", "error", err)
+		// 可以向客户端发送错误消息
+		errMsg, _ := json.Marshal(map[string]interface{}{"message_type": "error", "data": map[string]string{"error": "invalid_payload"}})
+		return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: errMsg})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
-// handleHealth 处理健康检查
-func (s *GoHubServer) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok","version":"` + s.config.Version + `"}`))
-}
-
-// Start 启动服务器
-func (s *GoHubServer) Start() error {
-	slog.Info("Starting server", "addr", s.srv.Addr, "cluster_mode", s.config.Cluster.Enabled)
-	return s.srv.ListenAndServe()
-}
-
-// Shutdown 优雅关闭服务器
-func (s *GoHubServer) Shutdown(ctx context.Context) error {
-	slog.Info("Shutting down server...")
-
-	// 关闭SDK
-	if err := s.gohubSDK.Close(); err != nil {
-		slog.Error("Failed to close SDK", "error", err)
+	// 模拟获取用户数据
+	profileData := map[string]interface{}{
+		"userID":    request.TargetUserID,
+		"nickname":  "User_" + request.TargetUserID,
+		"email":     request.TargetUserID + "@example.com",
+		"lastLogin": time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
 	}
 
-	// 关闭Hub
-	s.wsHub.Close()
+	// 构造完整的 WebSocket 消息进行回复
+	responseMsg := map[string]interface{}{
+		"message_type": "user_profile_data", // 自定义回复消息类型
+		"data":         profileData,
+	}
+	responseBytes, err := json.Marshal(responseMsg)
+	if err != nil {
+		slog.Error("序列化 user_profile_data 失败", "error", err)
+		return err
+	}
 
-	// 关闭HTTP服务器
-	return s.srv.Shutdown(ctx)
+	slog.Info("已获取用户 Profile，准备发送", "targetUserID", request.TargetUserID)
+	return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: responseBytes})
 }
 
-// GetSDK 返回SDK实例，方便外部使用和测试
-func (s *GoHubServer) GetSDK() *sdk.GoHubSDK {
-	return s.gohubSDK
+// handleSubmitOrder 是另一个自定义的 WebSocket 消息处理器
+func handleSubmitOrder(ctx context.Context, client *hub.Client, data json.RawMessage) error {
+	slog.Info("处理自定义消息: submit_order", "clientID", client.ID(), "payload", string(data))
+
+	// 检查用户是否有下单权限 (示例)
+	if !client.HasPermission(auth.Permission("submit:order")) { // 假设有这样的权限定义
+		slog.Warn("用户无权提交订单", "clientID", client.ID())
+		errMsg, _ := json.Marshal(map[string]interface{}{"message_type": "error", "data": map[string]string{"error": "permission_denied", "message": "You do not have permission to submit orders."}})
+		return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: errMsg})
+	}
+
+	var orderRequest struct {
+		ProductID string `json:"product_id"`
+		Quantity  int    `json:"quantity"`
+	}
+	if err := json.Unmarshal(data, &orderRequest); err != nil {
+		slog.Error("解析 submit_order 数据失败", "error", err)
+		errMsg, _ := json.Marshal(map[string]interface{}{"message_type": "error", "data": map[string]string{"error": "invalid_order_payload"}})
+		return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: errMsg})
+	}
+
+	// 模拟订单处理...
+	orderID := "ORD-" + uuid.New().String()[:8]
+	slog.Info("订单处理中...", "productID", orderRequest.ProductID, "quantity", orderRequest.Quantity, "assignedOrderID", orderID)
+	time.Sleep(50 * time.Millisecond) // 模拟处理延迟
+
+	// 回复订单提交结果
+	orderConfirmation := map[string]interface{}{
+		"message_type": "order_confirmation",
+		"data": map[string]interface{}{
+			"orderID":   orderID,
+			"productID": orderRequest.ProductID,
+			"quantity":  orderRequest.Quantity,
+			"status":    "Order Submitted Successfully",
+		},
+	}
+	responseBytes, _ := json.Marshal(orderConfirmation)
+	return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: responseBytes})
 }
 
+// --- main 函数 ---
 func main() {
 	flag.Parse()
 
-	config, err := configs.LoadConfig(*configFile)
+	// 1. 加载 GoHub 配置 (您的应用可能需要自己的配置文件，或者复用 GoHub 的)
+	// 这里我们假设您的应用直接使用或扩展 GoHub 的配置结构
+	gohubConfig, err := configs.LoadConfig(*configFile)
 	if err != nil {
-		slog.Error("Failed to load config", "error", err)
-		os.Exit(1)
+		// 如果配置文件不是 GoHub 原生的，您可能需要一个转换或映射步骤
+		// 或者直接手动构建 configs.Config 结构
+		slog.Error("加载 GoHub 配置文件失败，将使用默认配置", "error", err, "configFile", *configFile)
+		defaultCfg := configs.NewDefaultConfig() // 使用 GoHub 的默认配置
+		// 您可能需要根据应用需求调整这里的默认配置，特别是集群和总线类型
+		defaultCfg.Cluster.Enabled = false                    // 例如，对于独立应用，默认禁用集群
+		defaultCfg.Server.Addr = fmt.Sprintf(":%d", *appPort) // 使用命令行参数的端口
+		gohubConfig = defaultCfg
+	} else {
+		// 如果配置文件加载成功，但命令行指定了端口，则覆盖
+		if *appPort != 0 && getServerAddr(&gohubConfig, 0) != fmt.Sprintf(":%d", *appPort) {
+			// 更新gohubConfig中的端口信息
+			hostParts := strings.Split(gohubConfig.Server.Addr, ":")
+			host := ""
+			if len(hostParts) > 0 {
+				host = hostParts[0]
+			}
+			gohubConfig.Server.Addr = fmt.Sprintf("%s:%d", host, *appPort)
+		}
 	}
 
-	logLevel := configs.ParseLogLevel(config.Log.Level)
-	logHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	})
-
+	// 2. 设置日志级别 (使用 GoHub 配置中的日志级别)
+	logLevel := configs.ParseLogLevel(gohubConfig.Log.Level)
+	logHandlerOptions := &slog.HandlerOptions{Level: logLevel}
+	var logHandler slog.Handler
+	logHandler = slog.NewJSONHandler(os.Stdout, logHandlerOptions)
 	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
-	slog.Info("Logger initialized", "level", config.Log.Level)
+	slog.Info("应用程序日志记录器已初始化", "level", logLevel.String())
 
-	metrics.Default()
+	// 3. 初始化 Prometheus 指标 (复用 GoHub 的)
+	metrics.Default() //
 
-	// 创建服务器实例
-	server, err := NewGoHubServer(&config)
+	// 4. 创建并启动应用服务器
+	appServer, err := NewAppServer(&gohubConfig)
 	if err != nil {
-		slog.Error("Failed to create server", "error", err)
+		slog.Error("创建应用程序服务器失败", "error", err)
 		os.Exit(1)
 	}
 
-	// 优雅关闭
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// 5. 启动 HTTP 服务
 	go func() {
-		defer wg.Done()
-
-		// 监听系统信号
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-
-		// 给现有连接5秒时间关闭
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("Server shutdown error", "error", err)
+		if err := appServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("应用程序服务器启动失败", "error", err)
+			// 根据情况可能需要 os.Exit(1)
 		}
 	}()
 
-	// 启动服务器
-	if err := server.Start(); !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("HTTP server error", "error", err)
-	}
+	// 6. 实现优雅关闭
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	receivedSignal := <-quit
+	slog.Info("收到关闭信号", "signal", receivedSignal.String())
 
-	// 等待优雅关闭完成
-	wg.Wait()
-	slog.Info("Server stopped")
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second) // 10秒关闭超时
+	defer cancelShutdown()
+
+	if err := appServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("应用程序服务器关闭期间发生错误", "error", err)
+	} else {
+		slog.Info("应用程序服务器已成功关闭")
+	}
 }
 
-// 生成客户端ID
-func generateClientID() string {
-	return uuid.New().String()
+// --- 辅助函数 (可以从 GoHub 的 cmd/main.go 中借鉴或根据需要调整) ---
+
+// createMessageBus 根据配置创建相应的消息总线
+func createMessageBus(clusterConfig configs.Cluster) (bus.MessageBus, error) {
+	switch strings.ToLower(clusterConfig.BusType) {
+	case "nats":
+		slog.Info("正在创建 NATS 消息总线")
+		return hubnats.New(clusterConfig.NATS) //
+	case "redis":
+		slog.Info("正在创建 Redis 消息总线")
+		return hubredis.New(clusterConfig.Redis) //
+	case "noop", "": // 默认或明确指定 noop
+		slog.Info("正在创建 NoOp (空操作) 消息总线")
+		return noop.New(), nil //
+	default:
+		return nil, fmt.Errorf("不支持的消息总线类型: %s", clusterConfig.BusType)
+	}
 }
 
 // getServerAddr 根据配置和命令行参数获取服务监听地址
@@ -481,27 +500,10 @@ func getServerAddr(config *configs.Config, cliPort int) string {
 	addr := config.Server.Addr
 	if cliPort != 0 {
 		host := strings.Split(addr, ":")[0]
-		if host == "" {
-			host = "0.0.0.0" // 默认为监听所有接口
-		}
+		// 如果配置文件中的地址只有端口（例如 ":8080"），host 会是空字符串
+		// 此时我们希望监听所有接口，通常表示为 "0.0.0.0" 或 "" (net.Listen 会处理)
+		// 为保持与原main.go一致性，如果host为空，使用空字符串（代表监听所有可用IPv4和IPv6接口）
 		addr = fmt.Sprintf("%s:%d", host, cliPort)
 	}
 	return addr
-}
-
-// createMessageBus 根据配置创建相应的消息总线
-func createMessageBus(clusterConfig configs.Cluster) (bus.MessageBus, error) {
-	switch strings.ToLower(clusterConfig.BusType) {
-	case "nats":
-		slog.Info("Creating NATS message bus")
-		return hubnats.New(clusterConfig.NATS)
-	case "redis":
-		slog.Info("Creating Redis message bus")
-		return hubreds.New(clusterConfig.Redis)
-	case "noop", "":
-		slog.Info("Creating NoOp message bus")
-		return noop.New(), nil
-	default:
-		return nil, fmt.Errorf("unsupported message bus type: %s", clusterConfig.BusType)
-	}
 }

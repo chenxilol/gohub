@@ -2,13 +2,14 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// JWTClaims JWT令牌的声明
 type JWTClaims struct {
 	UserID      string       `json:"user_id"`
 	Username    string       `json:"username"`
@@ -16,16 +17,14 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
-// JWTService JWT认证与授权服务
 type JWTService struct {
-	secretKey string
+	secretKey []byte
 	issuer    string
 }
 
-// NewJWTService 创建一个新的JWT服务
 func NewJWTService(secretKey, issuer string) *JWTService {
 	return &JWTService{
-		secretKey: secretKey,
+		secretKey: []byte(secretKey),
 		issuer:    issuer,
 	}
 }
@@ -53,9 +52,10 @@ func (s *JWTService) GenerateToken(ctx context.Context, userID, username string,
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	// 使用密钥签名令牌
-	tokenString, err := token.SignedString([]byte(s.secretKey))
+	tokenString, err := token.SignedString(s.secretKey)
 	if err != nil {
-		return "", fmt.Errorf("could not sign the token: %w", err)
+		slog.ErrorContext(ctx, "无法签名JWT令牌", "error", err, "userID", userID)
+		return "", fmt.Errorf("无法签名令牌: %w", err)
 	}
 
 	return tokenString, nil
@@ -70,29 +70,47 @@ func (s *JWTService) Authenticate(ctx context.Context, tokenString string) (*Tok
 
 	// 解析令牌
 	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// 验证签名算法
+		// 验证签名算法是否为预期的 HMAC
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("非预期的签名算法: %v", token.Header["alg"])
 		}
-		return []byte(s.secretKey), nil
+		return s.secretKey, nil
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("could not parse token: %w", err)
+		if errors.Is(err, jwt.ErrTokenMalformed) {
+			slog.WarnContext(ctx, "JWT令牌格式错误", "error", err)
+			return nil, ErrInvalidToken
+		} else if errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+			slog.WarnContext(ctx, "JWT令牌签名无效", "error", err)
+			return nil, ErrInvalidToken
+		} else if errors.Is(err, jwt.ErrTokenExpired) || errors.Is(err, jwt.ErrTokenNotValidYet) {
+			slog.InfoContext(ctx, "JWT令牌已过期或尚未生效", "error", err)
+			return nil, ErrTokenExpired
+		} else {
+			slog.ErrorContext(ctx, "JWT令牌解析/验证失败", "error", err)
+			return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err) // 包装原始错误
+		}
 	}
 
-	// 检查令牌是否有效
 	if !token.Valid {
+		slog.WarnContext(ctx, "JWT令牌验证未通过，尽管解析时未报告致命错误")
 		return nil, ErrInvalidToken
 	}
 
 	// 获取JWT声明
 	claims, ok := token.Claims.(*JWTClaims)
 	if !ok {
+		slog.ErrorContext(ctx, "无法将token.Claims断言为*JWTClaims")
 		return nil, ErrInvalidToken
 	}
 
-	// 转换为通用TokenClaims
+	// （可选）验证 Issuer 是否匹配
+	if claims.Issuer != s.issuer {
+		slog.WarnContext(ctx, "JWT令牌签发者不匹配", "expected_issuer", s.issuer, "actual_issuer", claims.Issuer)
+		return nil, ErrInvalidToken
+	}
+
 	return &TokenClaims{
 		UserID:      claims.UserID,
 		Username:    claims.Username,
@@ -105,20 +123,8 @@ func (s *JWTService) Authenticate(ctx context.Context, tokenString string) (*Tok
 
 // CheckPermission 实现Authorizer接口，检查权限
 func (s *JWTService) CheckPermission(claims *TokenClaims, permission Permission, resource string) bool {
-	if claims == nil {
-		return false
-	}
-
-	// 检查令牌是否包含所需权限
-	for _, p := range claims.Permissions {
-		if p == permission || p == PermAdminSystem {
-			return true
-		}
-	}
-
-	return false
+	return HasPermission(claims, permission)
 }
 
-// 确保JWTService实现了Authenticator和Authorizer接口
 var _ Authenticator = (*JWTService)(nil)
 var _ Authorizer = (*JWTService)(nil)

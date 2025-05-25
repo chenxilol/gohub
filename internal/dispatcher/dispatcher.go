@@ -19,7 +19,7 @@ var (
 type HandlerFunc func(ctx context.Context, client *hub.Client, data json.RawMessage) error
 
 type Dispatcher struct {
-	handlers map[string]HandlerFunc
+	handlers map[string]hub.MessageHandlerFunc
 	mu       sync.RWMutex
 }
 
@@ -37,11 +37,11 @@ func GetDispatcher() *Dispatcher {
 
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
-		handlers: make(map[string]HandlerFunc),
+		handlers: make(map[string]hub.MessageHandlerFunc),
 	}
 }
 
-func (d *Dispatcher) Register(msgType string, handler HandlerFunc) {
+func (d *Dispatcher) Register(msgType string, handler hub.MessageHandlerFunc) { // 使用 hub.MessageHandlerFunc
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.handlers[msgType] = handler

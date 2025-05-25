@@ -1,22 +1,19 @@
-// Package auth 提供认证和授权功能
 package auth
 
 import (
 	"context"
 	"errors"
-	"fmt"
+	"slices"
 	"time"
 )
 
 var (
-	// 定义错误
 	ErrInvalidToken       = errors.New("无效的令牌")
 	ErrTokenExpired       = errors.New("令牌已过期")
 	ErrPermissionDenied   = errors.New("权限不足")
 	ErrInvalidCredentials = errors.New("无效的凭证")
 )
 
-// 定义权限类型
 type Permission string
 
 const (
@@ -30,13 +27,13 @@ const (
 	PermAdminSystem Permission = "admin:system" // 系统管理权限
 )
 
-// TokenClaims 定义令牌的声明内容
+// TokenClaims 定义令牌的声明内容 (通用结构，由具体的认证实现填充)
 type TokenClaims struct {
 	UserID      string       `json:"user_id"`     // 用户ID
 	Username    string       `json:"username"`    // 用户名
 	Permissions []Permission `json:"permissions"` // 权限列表
-	ExpiresAt   int64        `json:"exp"`         // 过期时间
-	IssuedAt    int64        `json:"iat"`         // 签发时间
+	ExpiresAt   int64        `json:"exp"`         // 过期时间 (Unix timestamp)
+	IssuedAt    int64        `json:"iat"`         // 签发时间 (Unix timestamp)
 	Issuer      string       `json:"iss"`         // 签发者
 }
 
@@ -55,97 +52,16 @@ type Authorizer interface {
 	CheckPermission(claims *TokenClaims, permission Permission, resource string) bool
 }
 
-// AuthService 认证与授权服务，实现Authenticator和Authorizer接口
-type AuthService struct {
-	secretKey string
-	issuer    string
-}
-
-// NewAuthService 创建一个新的认证与授权服务
-func NewAuthService(secretKey, issuer string) *AuthService {
-	return &AuthService{
-		secretKey: secretKey,
-		issuer:    issuer,
-	}
-}
-
-// 实现Authenticator接口的Authenticate方法
-func (s *AuthService) Authenticate(ctx context.Context, token string) (*TokenClaims, error) {
-	// 检查令牌是否为空
-	if token == "" {
-		return nil, ErrInvalidToken
-	}
-
-	// 在实际实现中，这里应该解析JWT令牌
-	// 但为了简单起见，我们这里先实现一个基础版本
-	// TODO: 添加完整的JWT解析实现
-
-	// 模拟令牌验证
-	claims := &TokenClaims{
-		UserID:      "user123",
-		Username:    "testuser",
-		Permissions: []Permission{PermReadMessage, PermSendMessage, PermJoinRoom, PermLeaveRoom},
-		ExpiresAt:   time.Now().Add(24 * time.Hour).Unix(),
-		IssuedAt:    time.Now().Unix(),
-		Issuer:      s.issuer,
-	}
-
-	// 检查令牌是否过期
-	if claims.ExpiresAt < time.Now().Unix() {
-		return nil, ErrTokenExpired
-	}
-
-	return claims, nil
-}
-
-// 实现Authenticator接口的GenerateToken方法
-func (s *AuthService) GenerateToken(ctx context.Context, userID, username string, permissions []Permission, expiration time.Duration) (string, error) {
-	// 创建令牌声明
-	claims := TokenClaims{
-		UserID:      userID,
-		Username:    username,
-		Permissions: permissions,
-		ExpiresAt:   time.Now().Add(expiration).Unix(),
-		IssuedAt:    time.Now().Unix(),
-		Issuer:      s.issuer,
-	}
-	fmt.Println(claims)
-
-	// 在实际实现中，这里应该生成JWT令牌
-	// 但为了简单起见，我们这里返回一个模拟的令牌字符串
-	// TODO: 添加完整的JWT生成实现
-
-	// 模拟令牌生成
-	return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mockToken", nil
-}
-
-// 实现Authorizer接口的CheckPermission方法
-func (s *AuthService) CheckPermission(claims *TokenClaims, permission Permission, resource string) bool {
-	if claims == nil {
-		return false
-	}
-
-	// 检查令牌是否包含所需权限
-	for _, p := range claims.Permissions {
-		if p == permission || p == PermAdminSystem {
-			return true
-		}
-	}
-
-	return false
-}
-
-// HasPermission 检查claims是否具有任一权限
+// HasPermission 是一个辅助函数，用于检查给定的 TokenClaims 是否包含指定的任一权限。
+// 如果用户拥有 PermAdminSystem 权限，则视为拥有所有权限。
 func HasPermission(claims *TokenClaims, permissions ...Permission) bool {
 	if claims == nil {
 		return false
 	}
 
 	// 系统管理员拥有所有权限
-	for _, p := range claims.Permissions {
-		if p == PermAdminSystem {
-			return true
-		}
+	if slices.Contains(claims.Permissions, PermAdminSystem) {
+		return true
 	}
 
 	// 检查特定权限
@@ -154,8 +70,8 @@ func HasPermission(claims *TokenClaims, permissions ...Permission) bool {
 		permissionMap[p] = true
 	}
 
-	for _, permission := range permissions {
-		if permissionMap[permission] {
+	for _, requestedPermission := range permissions {
+		if permissionMap[requestedPermission] {
 			return true
 		}
 	}

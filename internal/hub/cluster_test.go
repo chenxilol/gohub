@@ -120,7 +120,6 @@ func (b *ClusterMockBus) Unsubscribe(topic string) error {
 	defer b.Unlock()
 
 	if _, exists := b.subs[topic]; exists {
-		// 关闭该主题的所有通道
 		for _, ch := range b.subs[topic] {
 			close(ch)
 		}

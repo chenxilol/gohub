@@ -59,7 +59,6 @@ type Config struct {
 	Mode string
 }
 
-// DefaultConfig 返回默认配置
 func DefaultConfig() Config {
 	return Config{
 		Addrs:         []string{"localhost:6379"},
@@ -79,7 +78,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// RedisBus 基于Redis的消息总线实现
 type RedisBus struct {
 	client     redis.UniversalClient // 通用客户端接口，兼容单机、哨兵和集群模式
 	cfg        Config
@@ -94,21 +92,18 @@ type RetryHook struct {
 	bus *RedisBus
 }
 
-// DialHook 实现redis.Hook接口
 func (rh *RetryHook) DialHook(hook redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return hook(ctx, network, addr)
 	}
 }
 
-// ProcessHook 实现redis.Hook接口
 func (rh *RetryHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		return hook(ctx, cmd)
 	}
 }
 
-// ProcessPipelineHook 实现redis.Hook接口
 func (rh *RetryHook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		return hook(ctx, cmds)
@@ -118,21 +113,14 @@ func (rh *RetryHook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.P
 // OnRetry 记录每次重连事件
 func (rh *RetryHook) OnRetry(ctx context.Context, cmd redis.Cmder, attempt int, err error) {
 	if rh.bus != nil {
-		// 原子递增重连计数
 		atomic.AddUint64(&rh.bus.reconnects, 1)
-		// 记录日志
-		slog.Warn("redis reconnecting",
-			"attempt", attempt,
-			"error", err,
-			"cmd", cmd.Name())
+		slog.Warn("redis reconnecting", "reconnects", rh.bus.reconnects, "attempt", attempt, "error", err, "cmd", cmd.Name())
 	}
 }
 
-// New 创建新的RedisBus实例
 func New(cfg Config) (*RedisBus, error) {
 	var client redis.UniversalClient
 
-	// 通用Redis客户端选项
 	opts := &redis.UniversalOptions{
 		Addrs:        cfg.Addrs,
 		Password:     cfg.Password,
@@ -209,5 +197,4 @@ func (r *RedisBus) Close() error {
 	return r.client.Close()
 }
 
-// 确保RedisBus实现了MessageBus接口
 var _ bus.MessageBus = (*RedisBus)(nil)

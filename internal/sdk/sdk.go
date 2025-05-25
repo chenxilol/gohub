@@ -3,8 +3,10 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"gohub/internal/auth"
 	"gohub/internal/hub"
+	"log/slog"
 	"time"
 )
 
@@ -66,6 +68,9 @@ type SDK interface {
 	On(eventType EventType, handler EventHandler)
 	Off(eventType EventType, handler EventHandler)
 
+	// 消息分发注册
+	RegisterMessageHandler(messageType string, handler hub.MessageHandlerFunc) error
+
 	// 关闭SDK
 	Close() error
 }
@@ -74,13 +79,15 @@ type SDK interface {
 type GoHubSDK struct {
 	hub           *hub.Hub
 	eventHandlers map[EventType][]EventHandler
+	dispatcher    hub.MessageDispatcher
 }
 
 // NewSDK 创建新的SDK实例
-func NewSDK(h *hub.Hub) *GoHubSDK {
+func NewSDK(h *hub.Hub, d hub.MessageDispatcher) *GoHubSDK {
 	return &GoHubSDK{
 		hub:           h,
 		eventHandlers: make(map[EventType][]EventHandler),
+		dispatcher:    d,
 	}
 }
 
@@ -240,8 +247,7 @@ func (s *GoHubSDK) triggerEvent(ctx context.Context, event Event) {
 	for _, handler := range handlers {
 		err := handler(ctx, event)
 		if err != nil {
-			// 记录错误但继续执行其他处理器
-			// TODO: 使用slog记录错误
+			slog.Error("event handler error", "error", err)
 		}
 	}
 }
@@ -253,9 +259,15 @@ func (s *GoHubSDK) TriggerEvent(ctx context.Context, event Event) {
 
 // Close 实现SDK接口的关闭方法
 func (s *GoHubSDK) Close() error {
-	// 清理事件处理器
 	s.eventHandlers = make(map[EventType][]EventHandler)
 
-	// Hub的关闭由外部控制，这里不主动关闭
+	return nil
+}
+
+func (s *GoHubSDK) RegisterMessageHandler(messageType string, handler hub.MessageHandlerFunc) error {
+	if s.dispatcher == nil {
+		return errors.New("dispatcher not initialized in SDK")
+	}
+	s.dispatcher.Register(messageType, handler)
 	return nil
 }

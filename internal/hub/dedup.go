@@ -40,7 +40,7 @@ type MessageDeduplicator struct {
 	ttl         time.Duration // 消息缓存生存时间
 }
 
-// NewMessageDeduplicator 创建消息去重器
+// NewMessageDeduplicator 消息去重器
 func NewMessageDeduplicator(nodeID string, ttl time.Duration) *MessageDeduplicator {
 	if ttl <= 0 {
 		ttl = 30 * time.Second // 默认30秒
