@@ -134,50 +134,50 @@ func (h *Hub) setupBusSubscriptions(ctx context.Context) {
 }
 
 func (h *Hub) processBusMessage(data []byte) {
+	// 1. 首先尝试作为bus.Message解析，提取Data字段
+	var wrappedMsg bus.Message
+	if json.Unmarshal(data, &wrappedMsg) == nil && len(wrappedMsg.Data) > 0 {
+		// 使用提取的Data字段
+		data = wrappedMsg.Data
+	}
+
+	// 2. 尝试解析为BusMessage以获取广播内容
 	var busMsg BusMessage
-	if err := json.Unmarshal(data, &busMsg); err != nil {
-		slog.Error("failed to unmarshal bus message", "error", err)
-		frame := Frame{
-			MsgType: websocket.TextMessage,
-			Data:    data,
+	if json.Unmarshal(data, &busMsg) == nil && busMsg.ID.String() != "" {
+		// 有效的BusMessage
+
+		// 去重检查
+		msgID := busMsg.ID.String()
+		if h.deduplicator.IsDuplicate(msgID) {
+			slog.Debug("ignoring duplicate bus message", "id", msgID)
+			return
 		}
-		h.localBroadcast(frame)
-		return
-	}
+		h.deduplicator.MarkProcessed(msgID)
 
-	// 检查消息是否已处理过（去重）
-	msgID := busMsg.ID.String()
-	if h.deduplicator.IsDuplicate(msgID) {
-		slog.Debug("ignoring duplicate bus message", "id", msgID)
-		return
-	}
+		// 检查类型并广播
+		if busMsg.Type == "broadcast" && len(busMsg.Payload) > 0 {
+			var payload []byte = busMsg.Payload
 
-	// 标记消息为已处理
-	h.deduplicator.MarkProcessed(msgID)
+			// 尝试解析JSON字符串
+			var strMsg string
+			if json.Unmarshal(busMsg.Payload, &strMsg) == nil {
+				payload = []byte(strMsg)
+			}
 
-	// 根据消息类型处理
-	switch busMsg.Type {
-	case "broadcast":
-		// 创建广播帧
-		frame := Frame{
-			MsgType: websocket.TextMessage,
-			Data:    busMsg.Payload,
+			h.localBroadcast(Frame{MsgType: websocket.TextMessage, Data: payload})
+			slog.Debug("broadcast message processed", "id", msgID)
+			return
 		}
 
-		// 如果Payload是JSON字符串，解析出实际内容
-		var strMsg string
-		if err := json.Unmarshal(busMsg.Payload, &strMsg); err == nil {
-			// 成功将payload解析为字符串，使用该字符串作为消息内容
-			frame.Data = []byte(strMsg)
+		if busMsg.Type != "broadcast" {
+			slog.Warn("unknown bus message type", "type", busMsg.Type)
+			return
 		}
-
-		// 执行本地广播
-		h.localBroadcast(frame)
-		slog.Debug("processed bus broadcast message", "id", msgID, "source_node", busMsg.ID.NodeID)
-
-	default:
-		slog.Warn("received unknown bus message type", "type", busMsg.Type)
 	}
+
+	// 3. 如果前面的解析都失败，将消息作为纯文本广播
+	slog.Debug("broadcasting raw message data")
+	h.localBroadcast(Frame{MsgType: websocket.TextMessage, Data: data})
 }
 
 // Register 注册一个客户端到Hub

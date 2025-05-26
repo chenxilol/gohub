@@ -18,6 +18,7 @@ import (
 	"gohub/internal/metrics"
 	"gohub/internal/sdk"
 	internalwebsocket "gohub/internal/websocket"
+	"io/ioutil"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,8 +34,8 @@ import (
 )
 
 var (
-	configFile = flag.String("config", "path/to/your/app-config.yaml", "应用程序配置文件路径")
-	appPort    = flag.Int("port", 8080, "应用程序服务监听端口")
+	configFile = flag.String("config", "configs/config.yaml", "应用程序配置文件路径")
+	appPort    = flag.Int("port", 8084, "应用程序服务监听端口")
 )
 
 // globalUpgrader 用于将 HTTP 连接升级到 WebSocket
@@ -133,13 +134,21 @@ func (app *AppServer) registerCustomMessageHandlers() {
 // setupCustomSDKEventHandlers 设置应用程序自定义的 SDK 事件回调
 func (app *AppServer) setupCustomSDKEventHandlers() {
 	app.gohubSDK.On(sdk.EventClientConnected, func(ctx context.Context, event sdk.Event) error {
-		slog.Info("应用程序逻辑：客户端已连接", "clientID", event.ClientID, "username", event.Claims.Username)
+		username := "anonymous"
+		if event.Claims != nil { // 检查 Claims 是否为 nil
+			username = event.Claims.Username
+		}
+		slog.Info("应用程序逻辑：客户端已连接", "clientID", event.ClientID, "username", username)
 		// 例如：可以加载用户数据，更新在线状态等
 		return nil
 	})
 
 	app.gohubSDK.On(sdk.EventClientDisconnected, func(ctx context.Context, event sdk.Event) error {
-		slog.Info("应用程序逻辑：客户端已断开", "clientID", event.ClientID)
+		username := "anonymous"
+		if event.Claims != nil { // <<<<< 添加这个检查
+			username = event.Claims.Username
+		}
+		slog.Info("应用程序逻辑：客户端已断开", "clientID", event.ClientID, "username", username)
 		// 例如：清理用户会话，更新离线状态等
 		return nil
 	})
@@ -178,8 +187,45 @@ func (app *AppServer) setupAppRoutes(mux *http.ServeMux) {
 		})
 	})
 
-	// 如果需要，也可以在这里重新暴露 GoHub 的 /api/broadcast, /api/stats 等，
-	// 但通常业务应用会封装这些操作或提供自己的 API。
+	mux.HandleFunc("/api/broadcast", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var requestBody struct {
+			Message string `json:"message"`
+		}
+
+		bodyBytes, err := ioutil.ReadAll(r.Body) // 或者 io.ReadAll(r.Body) for Go 1.16+
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		if err := json.Unmarshal(bodyBytes, &requestBody); err != nil {
+			http.Error(w, "Invalid JSON payload: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if requestBody.Message == "" {
+			http.Error(w, "Message field cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		// 使用 SDK 进行广播
+		err = app.gohubSDK.BroadcastAll([]byte(requestBody.Message))
+		if err != nil {
+			slog.Error("Failed to broadcast message via API", "error", err)
+			http.Error(w, "Failed to broadcast message", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Message broadcasted successfully"))
+	})
+
 }
 
 // handleAppWebSocket 是应用程序处理 WebSocket 连接的函数
@@ -237,7 +283,7 @@ func (app *AppServer) handleAppWebSocket(w http.ResponseWriter, r *http.Request)
 	wsConnAdapter := internalwebsocket.NewGorillaConn(wsGorillaConn) //
 
 	// 创建客户端上下文，可以将 Hub 实例或其他应用级信息放入
-	clientCtx := context.WithValue(r.Context(), "app_server_instance", app)
+	clientCtx := context.WithValue(context.Background(), "app_server_instance", app)
 	clientCtx = context.WithValue(clientCtx, "hub", app.hubInstance) // 确保 handlers 能获取到 Hub
 
 	// 定义 onClose 回调

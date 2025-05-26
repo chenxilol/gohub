@@ -17,46 +17,46 @@ import (
 // Config Redis连接配置选项
 type Config struct {
 	// 连接地址 (单机模式、集群模式或哨兵模式)
-	Addrs []string
+	Addrs []string `json:"addrs" mapstructure:"addrs"`
 
 	// 密码，如果需要的话
-	Password string
+	Password string `json:"password" mapstructure:"password"`
 
 	// 数据库编号 (仅单机模式和哨兵模式有效)
-	DB int
+	DB int `json:"db" mapstructure:"db"`
 
 	// 哨兵模式的主节点名称
-	MasterName string
+	MasterName string `json:"master_name" mapstructure:"master_name"`
 
 	// 连接池大小
-	PoolSize int
+	PoolSize int `json:"pool_size" mapstructure:"pool_size"`
 
 	// 最小空闲连接数
-	MinIdleConns int
+	MinConn int `json:"min_conn" mapstructure:"min_conn"`
 
 	// 连接超时时间
-	DialTimeout time.Duration
+	DialTimeout time.Duration `json:"dial_timeout" mapstructure:"dial_timeout"`
 
 	// 读取超时时间
-	ReadTimeout time.Duration
+	ReadTimeout time.Duration `json:"read_timeout" mapstructure:"read_timeout"`
 
 	// 写入超时时间
-	WriteTimeout time.Duration
+	WriteTimeout time.Duration `json:"write_timeout" mapstructure:"write_timeout"`
 
 	// 重试间隔
-	RetryInterval time.Duration
+	RetryInterval time.Duration `json:"retry_interval" mapstructure:"retry_interval"`
 
 	// 最大重试次数
-	MaxRetries int
+	MaxRetries int `json:"max_retries" mapstructure:"max_retries"`
 
 	// 消息总线操作超时（发布超时）
-	OpTimeout time.Duration
+	OpTimeout time.Duration `json:"op_timeout" mapstructure:"op_timeout"`
 
 	// 键前缀
-	KeyPrefix string
+	KeyPrefix string `json:"key_prefix" mapstructure:"key_prefix"`
 
 	// 模式: single(单机), sentinel(哨兵), cluster(集群)
-	Mode string
+	Mode string `json:"mode" mapstructure:"mode"`
 }
 
 func DefaultConfig() Config {
@@ -66,7 +66,7 @@ func DefaultConfig() Config {
 		DB:            0,
 		MasterName:    "",
 		PoolSize:      10,
-		MinIdleConns:  2,
+		MinConn:       2,
 		DialTimeout:   5 * time.Second,
 		ReadTimeout:   3 * time.Second,
 		WriteTimeout:  3 * time.Second,
@@ -126,7 +126,7 @@ func New(cfg Config) (*RedisBus, error) {
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		PoolSize:     cfg.PoolSize,
-		MinIdleConns: cfg.MinIdleConns,
+		MinIdleConns: cfg.MinConn,
 		DialTimeout:  cfg.DialTimeout,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
