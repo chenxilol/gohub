@@ -1,4 +1,4 @@
-# GoHub - 基于开源框架的高性能分布式 Go WebSocket 框架
+# GoHub - 高性能分布式 Go WebSocket 框架
 
 [![Go 版本](https://img.shields.io/badge/go%20version-%3E%3D1.20-6F93CF.svg)](https://golang.org/dl/)
 [![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
