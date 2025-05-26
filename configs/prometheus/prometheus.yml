@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090'] # Prometheus 监控自己
+
+  - job_name: 'gohub_app'
+    static_configs:
+      # 'gohub' 是下面 docker-compose.yml 中 GoHub 服务的名称
+      # 8080 是 GoHub 容器内部暴露的端口
+      - targets: ['gohub:8080']
+        labels:
+          instance: 'gohub-docker-instance-1' 

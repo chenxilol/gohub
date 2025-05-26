@@ -18,32 +18,25 @@ func (r *RedisBus) subscribeRoutine(ctx context.Context, topic string, outCh cha
 	defer close(outCh)
 
 	for {
-		// 检查上下文是否已取消
 		select {
 		case <-ctx.Done():
 			slog.Info("subscription context canceled, exiting", "topic", topic)
 			return
 		default:
-			// 继续执行
 		}
 
-		// 订阅Redis频道
 		pubsub := r.client.Subscribe(ctx, topic)
 
-		// 确保在退出循环时关闭pubsub
 		func() {
 			defer pubsub.Close()
 
-			// 接收订阅确认消息
 			_, err := pubsub.Receive(ctx)
 			if err != nil {
 				slog.Error("failed to receive subscription confirmation",
 					"topic", topic, "error", err)
 
-				// 增加重试计数
 				atomic.AddInt32(&retryCount, 1)
 
-				// 等待一段时间后重试
 				select {
 				case <-ctx.Done():
 					return
@@ -62,17 +55,13 @@ func (r *RedisBus) subscribeRoutine(ctx context.Context, topic string, outCh cha
 			// 获取消息通道
 			msgCh := pubsub.Channel()
 
-			// 处理接收到的消息
 			for msg := range msgCh {
-				// 检查上下文是否已取消
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					// 继续处理
 				}
 
-				// 复制消息内容以避免并发问题
 				data := []byte(msg.Payload)
 				fmt.Println(msg.Payload)
 
@@ -82,7 +71,6 @@ func (r *RedisBus) subscribeRoutine(ctx context.Context, topic string, outCh cha
 				// 发送消息到输出通道
 				select {
 				case outCh <- data:
-					// 消息已发送
 				case <-ctx.Done():
 					return
 				case <-time.After(r.cfg.OpTimeout):
@@ -124,19 +112,15 @@ func (r *RedisBus) subscribeRoutine(ctx context.Context, topic string, outCh cha
 func (r *RedisBus) subscribeRoutineWithTimestamp(ctx context.Context, topic string, outCh chan<- *bus.Message) {
 	var retryCount int32
 
-	// 使用defer确保在函数退出时关闭输出通道
 	defer close(outCh)
 
 	for {
-		// 检查上下文是否已取消
 		select {
 		case <-ctx.Done():
 			slog.Info("subscription context canceled, exiting", "topic", topic)
 			return
 		default:
-			// 继续执行
 		}
-
 		// 订阅Redis频道
 		pubsub := r.client.Subscribe(ctx, topic)
 

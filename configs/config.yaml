@@ -8,7 +8,7 @@ server:
   addr: ":8083" # HTTP服务监听地址
   hub :
     read_timeout: 60s              # WebSocket读取超时
-    write_timeout: 10s             # WebSocket写入超时
+    write_timeout: 60s             # WebSocket写入超时
     read_buffer_size: 4096         # 读取缓冲区大小 (字节)
     write_buffer_size: 4096        # 写入缓冲区大小 (字节)
     message_buffer_cap: 256        # 消息队列容量 (消息数)
@@ -17,6 +17,8 @@ server:
 # 集群配置
 cluster:
   enabled: true                 # 是否启用集群模式
+  bus_type: "redis"              # 消息总线类型: "nats", "redis", "noop"
+  
   # NATS配置 (用于集群间通信)
   nats:
     urls:
@@ -33,6 +35,24 @@ cluster:
     username: ""                 # NATS认证用户名 (可选)
     password: ""                 # NATS认证密码 (可选)
     token: ""                    # NATS认证令牌 (可选)
+
+  # Redis配置 (用于集群间通信)
+  redis:
+    addrs:
+      - "localhost:6379"
+    password: ""                 # Redis密码
+    db: 0                        # 数据库编号
+    master_name: ""              # 哨兵模式的主节点名称
+    pool_size: 10                # 连接池大小
+    min_conn: 2                  # 最小空闲连接数
+    dial_timeout: 5s             # 连接超时
+    read_timeout: 3s             # 读取超时
+    write_timeout: 3s            # 写入超时
+    retry_interval: 200ms        # 重试间隔
+    max_retries: 3               # 最大重试次数
+    op_timeout: 500ms            # 操作超时
+    key_prefix: "gohub:"         # 键前缀
+    mode: "single"               # 模式: single(单机), sentinel(哨兵), cluster(集群)
 
 # 认证配置
 auth:

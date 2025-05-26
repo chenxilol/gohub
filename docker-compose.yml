@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  gohub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # You can override these build arguments here if needed
+        GO_VERSION: 1.24
+        ALPINE_VERSION: latest
+        APP_NAME: gohub_server
+        APP_WORKDIR: /app
+        APP_CONFIG_FILE_PATH: /app/configs/config.yaml
+    ports:
+      # Map host port 8081 to container port 8080 to avoid conflicts on the host
+      - "8081:8080"
+    volumes:
+      # Mount the GoHub application configuration
+      # Source: your local config file
+      # Target: path inside the container, matching APP_CONFIG_FILE_PATH in Dockerfile
+      - ./configs/config.yaml:/app/configs/config.yaml # Adjust source path if your config is elsewhere in ./configs/
+    networks:
+      - monitor-net
+    restart: unless-stopped
+    # healthcheck: # Optional: Add a healthcheck for your GoHub app
+    #   test: ["CMD", "curl", "-f", "http://localhost:8080/health"] # Adjust path as needed
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+  prometheus:
+    image: bitnami/prometheus:latest # Using a versioned tag is often safer, e.g., bitnami/prometheus:2.45.0
+    ports:
+      - "9090:9090"
+    volumes:
+      # Mount Prometheus configuration from the new path
+      - ./configs/prometheus/prometheus.yml:/opt/bitnami/prometheus/conf/prometheus.yml
+      - prometheus_data:/opt/bitnami/prometheus/data # Persistent data
+    networks:
+      - monitor-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:latest # Using a versioned tag is often safer, e.g., grafana/grafana-oss:10.2.0
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount Grafana provisioning files from new paths
+      - ./configs/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      # Optional: Mount dashboard definitions if you have them in ./configs/grafana/provisioning/dashboards
+      # - ./configs/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - grafana_data:/var/lib/grafana # Persistent data
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: yoursecurepassword # Change this!
+      # GF_INSTALL_PLUGINS: grafana-piechart-panel # Example: install plugins
+    networks:
+      - monitor-net
+    depends_on:
+      prometheus:
+        condition: service_started # Or service_healthy if Prometheus has a healthcheck
+    restart: unless-stopped
+
+networks:
+  monitor-net:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data: 
