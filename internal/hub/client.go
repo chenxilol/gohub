@@ -23,15 +23,14 @@ type Client struct {
 	out        chan Frame // 发送消息队列
 	ctx        context.Context
 	cancel     context.CancelFunc
-	cfg        Config       // 配置选项
+	cfg        Config
 	onClose    func(string) // 关闭时的回调函数
 	closed     sync.Once
-	dispatcher MessageDispatcher // 添加 dispatcher 接口字段
+	dispatcher MessageDispatcher
 	authClaims *auth.TokenClaims // 认证声明（如果已认证）
 	metadata   sync.Map          // 客户端元数据，用于存储自定义信息
 }
 
-// WSConn 解耦WebSocket连接接口，便于测试
 type WSConn interface {
 	ReadMessage() (int, []byte, error)
 	WriteMessage(int, []byte) error
@@ -76,15 +75,10 @@ func NewClient(ctx context.Context, id string, conn WSConn, cfg Config, onClose 
 		dispatcher: dispatcher,
 	}
 
-	// 启动读写循环
 	go client.readLoop()
 	go client.writeLoop()
 
 	return client
-}
-
-func (c *Client) ID() string {
-	return c.id
 }
 
 // Send 发送消息到客户端
@@ -157,7 +151,6 @@ func (c *Client) writeLoop() {
 	}
 }
 
-// shutdown 安全关闭客户端连接
 func (c *Client) shutdown() {
 	c.closed.Do(func() {
 		c.cancel()
@@ -188,6 +181,10 @@ func IsWebsocketCloseError(err error) bool {
 		websocket.CloseNormalClosure,
 		websocket.CloseGoingAway,
 		websocket.CloseNoStatusReceived)
+}
+
+func (c *Client) ID() string {
+	return c.id
 }
 
 // SetAuthClaims 设置客户端的认证声明

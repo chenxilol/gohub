@@ -66,7 +66,6 @@ func NewAppServer(cfg *configs.Config) (*AppServer, error) {
 		config: cfg,
 	}
 
-	// 1. 初始化消息总线 (根据 GoHub 配置)
 	if cfg.Cluster.Enabled {
 		slog.Info("集群模式已启用，正在创建消息总线", "bus_type", cfg.Cluster.BusType)
 		app.messageBus, err = createMessageBus(cfg.Cluster)
@@ -80,29 +79,15 @@ func NewAppServer(cfg *configs.Config) (*AppServer, error) {
 
 	app.authService = auth.NewJWTService(cfg.Auth.SecretKey, cfg.Auth.Issuer)
 	app.appDispatcher = dispatcher.GetDispatcher()
-
-	// 4. 初始化 GoHub Hub 核心
-	app.hubInstance = hub.NewHub(app.messageBus, cfg.Hub) //
-
-	// 5. 初始化 GoHub SDK，并注入 Hub 和 Dispatcher
-	app.gohubSDK = sdk.NewSDK(app.hubInstance, app.appDispatcher) //
-
-	// 6. 注册 GoHub 内置的核心消息处理器 (ping, room join/leave 等)
-	// 这些处理器会注册到 app.appDispatcher 上
-	handlers.RegisterHandlers(app.appDispatcher) //
-
-	// 7. (关键步骤) 通过 SDK 注册应用程序自定义的消息处理器
+	app.hubInstance = hub.NewHub(app.messageBus, cfg.Hub)
+	app.gohubSDK = sdk.NewSDK(app.hubInstance, app.appDispatcher)
+	handlers.RegisterHandlers(app.appDispatcher)
 	app.registerCustomMessageHandlers()
-
-	// 8. 设置应用程序自定义的 SDK 事件处理器 (可选)
 	app.setupCustomSDKEventHandlers()
-
-	// 9. 设置 HTTP 路由
 	mux := http.NewServeMux()
-	app.setupAppRoutes(mux) // 此函数将包含 WebSocket 端点和可能的其他业务 API 端点
-
+	app.setupAppRoutes(mux)
 	app.httpServer = &http.Server{
-		Addr:    getServerAddr(cfg, *appPort), // 使用 appPort 或 cfg 中的端口
+		Addr:    getServerAddr(cfg, *appPort),
 		Handler: mux,
 	}
 

@@ -110,7 +110,9 @@ func (r *RedisBus) SubscribeWithTimestamp(ctx context.Context, topic string) (<-
 
 	r.subs[topic+"_timestamp"] = cancel
 
+	// 启动后台goroutine处理订阅
 	go r.subscribeRoutineWithTimestamp(subCtx, formattedTopic, outCh)
 
 	return outCh, nil
+
 }

@@ -52,68 +52,205 @@
     * 集群模式可扩展至百万级连接
     * 优化的内存使用，减少GC压力
 
-## 🚀 快速开始
+## 🚀 快速开始 (作为库使用)
 
-### 环境要求
+GoHub 设计为一个核心库，方便您集成到自己的 Go 应用程序中，以构建强大的 WebSocket 服务。
 
-* Go 1.20 或更高版本
-* (用于分布式模式) NATS Server (推荐 v2.8+，使用 JetStream 以支持持久化) 或 Redis
+### 1. 安装 GoHub 库
 
-### 安装
+在您的 Go 项目模块中，使用以下命令获取 GoHub：
+```bash
+go get github.com/chenxilol/gohub
+```
 
-1. **克隆仓库:**
-   ```bash
-   git clone https://github.com/chenxilol/gohub.git
-   cd gohub
-   ```
+### 2. 基本用法：构建您自己的 WebSocket 服务器
 
-2. **下载依赖:**
-   ```bash
-   go mod tidy
-   ```
+以下是一个简约示例，展示如何在您的应用程序中初始化 GoHub 组件、注册自定义消息处理器，并启动一个 WebSocket 服务器实例。
 
-### 配置
+**推荐的配置方式是加载 YAML 文件：**
 
-1. **复制示例配置文件:**
-   ```bash
-   cp configs/config.example.yaml configs/config.yaml
-   ```
+1.  **获取配置文件**: 从 GoHub 仓库的 `configs/` 目录下复制 `config.example.yaml` 到您的项目，例如将其命名为 `my-gohub-config.yaml`。
+2.  **修改配置**: 根据您的需求编辑 `my-gohub-config.yaml`。对于最简单的单节点启动，您可以参考 `config.example.yaml` 中关于 `cluster.enabled: false` 和 `bus_type: "noop"` 的设置。
+3.  **在代码中加载**: 使用 GoHub 提供的 `configs.LoadConfig()` 函数加载您的配置文件。
 
-2. **编辑 `configs/config.yaml`:**
-   * 对于**分布式集群模式**（推荐用于生产环境）:
-     ```yaml
-     cluster:
-       enabled: true
-       bus_type: "nats"  # 或 "redis"
-       nats:
-         url: "nats://localhost:4222"
-         # 如果使用JetStream持久化
-         stream_name: "gohub"
-         durable_name: "gohub-durable"
-     ```
-   * 对于无需外部依赖的快速**单节点启动**:
-     ```yaml
-     cluster:
-       enabled: false
-       bus_type: "noop"
-     ```
-   * 更新 `auth.secret_key` 用于 JWT 生成
+```go
+package main
 
-   *请参考 `configs/config.example.yaml` 查看所有可用选项*
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+	"flag" // 用于允许通过命令行覆盖配置文件路径
 
-### 运行 GoHub
+	// 假设 GoHub 将其公共 API 组织在类似 'pkg' 的目录下或直接在顶层包。
+	// 实际路径请参考 GoHub 的官方文档和源码结构。
+	"github.com/chenxilol/gohub/pkg/configs"
+	"github.com/chenxilol/gohub/pkg/dispatcher"
+	"github.com/chenxilol/gohub/pkg/hub"
+	"github.com/chenxilol/gohub/pkg/logging" // 假设有日志初始化包
+	"github.com/chenxilol/gohub/pkg/server"   // 假设 NewGoHubServer 在此
+	"github.com/chenxilol/gohub/pkg/websocket"
+)
 
-1. **从源码运行:**
-   ```bash
-   go run cmd/gohub/main.go -config configs/config.yaml
-   ```
-   默认情况下，服务将在 `config.yaml` 中指定的地址启动 (例如：`:8080`)。WebSocket 端点位于 `/ws`。
+// handleMyCustomAction 示例自定义消息处理器
+func handleMyCustomAction(ctx context.Context, client *hub.Client, data json.RawMessage) error {
+	slog.Info("处理 'my_custom_action'", "client_id", client.ID(), "payload", string(data))
 
-2. **使用 Docker 集群模式 (生产环境推荐):**
-   ```bash
-   # 启动完整的分布式环境
-   docker-compose up -d
-   ```
+	var requestPayload struct {
+		ActionDetail string `json:"action_detail"`
+	}
+	if err := json.Unmarshal(data, &requestPayload); err != nil {
+		slog.Error("解析自定义操作负载失败", "error", err, "client_id", client.ID())
+		errorResp := hub.NewError(hub.ErrCodeInvalidFormat, "my_custom_action 的负载无效", 0, err.Error())
+		errorMsgJson, _ := errorResp.ToJSON()
+		_ = client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: errorMsgJson})
+		return err
+	}
+
+	slog.Info("自定义操作详情", "client_id", client.ID(), "detail", requestPayload.ActionDetail)
+
+	replyData := map[string]interface{}{"status": "success", "action_processed": "my_custom_action"}
+	responseHubMsg, err := hub.NewMessage(0, "my_custom_action_reply", replyData)
+	if err != nil {
+		slog.Error("创建回复消息失败", "error", err, "client_id", client.ID())
+		return err
+	}
+	encodedReply, err := responseHubMsg.Encode()
+	if err != nil {
+		slog.Error("编码回复消息失败", "error", err, "client_id", client.ID())
+		return err
+	}
+	return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: encodedReply})
+}
+
+func main() {
+	// 0. (可选) 允许通过命令行参数指定配置文件路径
+	configFile := flag.String("config", "my-gohub-config.yaml", "Path to your GoHub configuration file")
+	flag.Parse()
+
+	// 1. 初始化日志 (推荐做法)
+	// 您可以根据需要，在加载配置后根据配置文件的日志级别调整日志处理器
+	handler := logging.NewSlogTextHandler(os.Stdout, &logging.SlogHandlerOptions{Level: slog.LevelInfo}) // 默认Info级别
+	logging.SetupDefaultSlog(handler)
+
+
+	// 2. 加载 GoHub 服务器配置从 YAML 文件
+	// 确保您已将 GoHub 项目中的 'configs/config.example.yaml' 复制到您的项目
+	// (例如，作为 'my-gohub-config.yaml') 并进行了相应修改。
+	slog.Info("正在加载配置文件...", "path", *configFile)
+	cfg, err := configs.LoadConfig(*configFile) // 确保 configs.LoadConfig 是公开的 API
+	if err != nil {
+		slog.Error("加载配置文件失败", "path", *configFile, "error", err)
+		os.Exit(1)
+	}
+	// 您还可以根据 cfg.Log 中的设置，重新配置 slog 处理程序（例如，设置正确的日志级别和格式）
+	// logging.SetupDefaultSlog(...) // 重新配置日志（如果需要）
+
+	// (可选) 以编程方式覆盖或补充配置
+	// cfg.HTTP.Address = ":9090" // 例如，覆盖HTTP监听地址
+	// cfg.Auth.SecretKey = os.Getenv("GOHUB_SECRET_KEY") // 例如，从环境变量加载密钥
+
+	slog.Info("配置加载成功。正在准备启动 GoHub 服务器...", "http_address", cfg.HTTP.Address)
+
+	// 3. 获取全局分发器实例并注册您的消息处理器
+	disp := dispatcher.GetDispatcher() // 假设 GetDispatcher() 是公开的 API
+	disp.Register("my_custom_action", handleMyCustomAction)
+	slog.Info("已成功注册自定义消息处理器 'my_custom_action'")
+
+	// 4. 创建 GoHub 服务器实例
+	gohubServer, err := server.NewGoHubServer(cfg) // 假设 NewGoHubServer 接受 *configs.Config
+	if err != nil {
+		slog.Error("创建 GoHub 服务器实例失败", "error", err)
+		os.Exit(1)
+	}
+
+	// 5. 启动服务器 (在 goroutine 中以非阻塞方式启动)
+	go func() {
+		slog.Info("GoHub 服务器正在启动...", "address", cfg.HTTP.Address)
+		if err := gohubServer.Start(); err != nil { // 假设 Start() 方法存在
+			slog.Error("GoHub 服务器启动失败", "error", err)
+			os.Exit(1)
+		}
+	}()
+	slog.Info("GoHub 服务器已在 "+cfg.HTTP.Address+" 监听", "url", "ws://localhost"+cfg.HTTP.Address+"/ws")
+
+	// 6. 实现优雅关闭
+	quitChannel := make(chan os.Signal, 1)
+	signal.Notify(quitChannel, syscall.SIGINT, syscall.SIGTERM)
+	
+	receivedSignal := <-quitChannel
+	slog.Info("接收到关闭信号", "signal", receivedSignal.String())
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+
+	slog.Info("正在优雅地关闭 GoHub 服务器...")
+	if err := gohubServer.Shutdown(shutdownCtx); err != nil { // 假设 Shutdown(context.Context) 方法存在
+		slog.Error("服务器关闭失败", "error", err)
+	} else {
+		slog.Info("服务器已成功关闭")
+	}
+}
+```
+*上面的代码是一个指导性示例。您需要根据 GoHub 库的实际公共 API（包结构、函数签名、配置结构等）进行调整。确保 `configs.LoadConfig` 和 `server.NewGoHubServer` 等函数是您库导出的公共API。*
+
+## ⚙️ 运行 GoHub 自带的示例服务器 (可选)
+
+如果您想快速运行 GoHub 项目中包含的一个完整功能的示例服务器（例如，用于测试或查看其运行方式），可以按以下步骤操作：
+
+### 环境要求与安装 (针对运行示例)
+
+*   Go 1.20 或更高版本
+*   Git
+
+1.  **克隆 GoHub 仓库:**
+    ```bash
+    git clone https://github.com/chenxilol/gohub.git
+    cd gohub
+    ```
+
+2.  **下载依赖:**
+    ```bash
+    go mod tidy
+    ```
+
+### 配置示例服务器
+
+1.  **复制示例配置文件:**
+    ```bash
+    cp configs/config.example.yaml configs/config.yaml
+    ```
+
+2.  **编辑 `configs/config.yaml`:**
+    *   对于快速**单节点启动** (无需外部依赖):
+        ```yaml
+        cluster:
+          enabled: false
+          bus_type: "noop"
+        # http:
+        #   address: ":8080" # 默认监听地址和端口
+        ```
+    *   确保更新 `auth.secret_key`，例如使用 `openssl rand -hex 32` 生成。一个安全的密钥对于生产环境至关重要。
+    *   如需体验**分布式集群模式** (推荐用于生产环境)，您需要启用 `cluster` (设置 `enabled: true`) 并配置消息总线 (NATS 或 Redis)。请参考 `configs/config.example.yaml` 中关于 `bus_type` (设置为 `"nats"` 或 `"redis"`) 的部分，并配置相应的 NATS 或 Redis 服务器地址。
+
+### 运行示例服务器
+
+1.  **从源码运行 (推荐用于快速尝试):**
+    ```bash
+    go run cmd/gohub/main.go -config configs/config.yaml
+    ```
+    服务启动后，您可以通过 WebSocket 客户端连接到 `ws://localhost:8080/ws` (假设您使用了默认端口配置)。
+
+2.  **使用 Docker (适用于生产或模拟分布式环境):**
+    ```bash
+    # 启动完整的分布式环境 (通常 docker-compose.yml 预配置为使用 NATS)
+    docker-compose up -d
+    ```
+    这将根据 `docker-compose.yml` 文件启动 GoHub 服务以及其依赖 (例如 NATS 消息总线)。
 
 ## 💻 分布式WebSocket使用示例
 
@@ -144,63 +281,6 @@ cluster:
     stream_name: "gohub"
 ```
 
-### 2. 建立WebSocket连接
-
-前端JavaScript示例：
-
-```javascript
-// 连接到任意GoHub节点
-const socket = new WebSocket("ws://node1:8080/ws");  // 可以是集群中任意节点
-
-socket.onopen = function(e) {
-  console.log("WebSocket连接已建立");
-  
-  // 发送认证消息
-  const authMessage = {
-    message_type: "authenticate",
-    data: {
-      token: "您的JWT令牌"
-    }
-  };
-  socket.send(JSON.stringify(authMessage));
-};
-
-socket.onmessage = function(event) {
-  const message = JSON.parse(event.data);
-  console.log("收到消息:", message);
-  
-  // 处理消息...
-};
-```
-
-### 3. 房间功能跨节点工作
-
-即使用户连接到不同节点，GoHub的分布式特性也能确保房间功能正常工作：
-
-```javascript
-// 用户A（连接到节点1）创建并加入房间
-function joinRoom(roomId) {
-  socket.send(JSON.stringify({
-    message_id: Date.now(),
-    message_type: "join_room",
-    data: { room_id: roomId }
-  }));
-}
-
-// 用户B（连接到节点2）也可以加入同一房间并发送消息
-// 消息会通过消息总线同步到所有节点
-function sendRoomMessage(roomId, content) {
-  socket.send(JSON.stringify({
-    message_id: Date.now(),
-    message_type: "room_message",
-    data: {
-      room_id: roomId,
-      content: content
-    }
-  }));
-}
-```
-
 ## 📊 与其他WebSocket框架对比
 
 | 特性 | GoHub | Melody | Gorilla WebSocket | go-netty-ws |
@@ -216,16 +296,7 @@ function sendRoomMessage(roomId, content) {
 
 ## 🚀 性能基准
 
-GoHub在分布式模式下依然保持出色性能：
 
-| 配置 | 连接数量 | 内存使用 | 每秒消息处理能力 |
-|------|--------|---------|----------------|
-| 单节点 | 10,000 | ~281MB | >10,000 |
-| 单节点 | 100,000 | ~2.7GB | >5,000 |
-| 3节点集群 | 300,000 | ~8.1GB (总计) | >15,000 (总计) |
-| 5节点集群 | 500,000 | ~13.5GB (总计) | >25,000 (总计) |
-
-*注意：实际性能可能因硬件配置、消息大小和业务逻辑复杂度而异*
 
 ## 消息格式
 
@@ -276,25 +347,33 @@ GoHub 遵循标准的 Go 项目布局：
 
 ## 🔧 扩展 GoHub (自定义消息处理器)
 
-您可以为特定于应用程序的 WebSocket 消息添加自定义处理器。
+您可以为特定于应用程序的 WebSocket 消息添加自定义处理器。GoHub 提供了一个中心的、可获取的分发器实例。要在您的应用程序中添加自定义 WebSocket 消息处理器，您可以在初始化 GoHub 相关服务 (如通过 `server.NewGoHubServer`) *之前*，获取分发器实例并注册您的处理器。
 
-**当前推荐方法:**
+以下是如何在您自己项目的 `main.go` (或相关的应用初始化代码) 中实现这一点：
 
-GoHub 使用一个中心的、单例的分发器。要在不修改 GoHub 内部代码的情况下添加自定义消息处理器，您可以在您的 `main.go` (或应用程序设置代码) 中，在 GoHub 服务器完全启动*之前*，将它们注册到这个全局分发器实例。
-
-**示例 (在您的 `cmd/gohub/main.go` 中进行概念性修改):**
+**示例 (在您的应用程序的 `main.go` 或设置代码中):**
 
 ```go
-// 将此代码放在调用 NewGoHubServer 和 server.Start() 之前
+// main.go (您的应用程序入口)
+package main
 
 import (
-	"gohub/internal/dispatcher"
-	"gohub/internal/hub" // 用于 hub.Client 类型和 hub.Frame
-	"gohub/internal/websocket" // 用于消息类型如 websocket.TextMessage
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"log/slog"
-	// ... 其他必要的导入
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+	"flag" // 用于示例中的配置文件加载
+
+	// 假设的公共 API 路径。请根据 GoHub 的实际导出结构调整。
+	"github.com/chenxilol/gohub/pkg/configs"
+	"github.com/chenxilol/gohub/pkg/dispatcher"
+	"github.com/chenxilol/gohub/pkg/hub"
+	"github.com/chenxilol/gohub/pkg/logging" // 假设的日志初始化包
+	"github.com/chenxilol/gohub/pkg/server"   // 假设 NewGoHubServer 和其他服务器相关功能在此
+	"github.com/chenxilol/gohub/pkg/websocket"
 )
 
 // 1. 定义您的自定义处理函数
@@ -303,13 +382,11 @@ func handleMyCustomAction(ctx context.Context, client *hub.Client, data json.Raw
     slog.Info("正在处理 'my_custom_action'", "client_id", client.ID(), "payload", string(data))
     
     var requestPayload struct {
-        // 定义您的自定义消息数据中的预期字段
         ActionDetail string `json:"action_detail"`
     }
     if err := json.Unmarshal(data, &requestPayload); err != nil {
         slog.Error("解析自定义操作负载失败", "error", err, "client_id", client.ID())
-        // 可选：向客户端发送错误响应
-        errorResp := hub.NewError(hub.ErrCodeInvalidFormat, "my_custom_action 的负载无效", 0, err.Error()) // 假设在没有可用请求 ID 时使用 0
+        errorResp := hub.NewError(hub.ErrCodeInvalidFormat, "my_custom_action 的负载无效", 0, err.Error())
         errorMsgJson, _ := errorResp.ToJSON()
         _ = client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: errorMsgJson})
         return err 
@@ -319,11 +396,8 @@ func handleMyCustomAction(ctx context.Context, client *hub.Client, data json.Raw
 
     // ... 您的业务逻辑代码 ...
 
-    // 示例：发送成功回复
     replyData := map[string]interface{}{"status": "success", "action_processed": "my_custom_action", "detail_received": requestPayload.ActionDetail}
-    // 为回复构建一个 hub.Message
-    // 假设您有生成消息 ID 的方法，或者这是一个服务器推送，没有显式的 request_id 匹配
-    responseHubMsg, err := hub.NewMessage(0, "my_custom_action_reply", replyData) // 使用 0 作为占位消息 ID
+    responseHubMsg, err := hub.NewMessage(0, "my_custom_action_reply", replyData)
     if err != nil {
          slog.Error("创建回复消息失败", "error", err, "client_id", client.ID())
         return err
@@ -337,34 +411,67 @@ func handleMyCustomAction(ctx context.Context, client *hub.Client, data json.Raw
     return client.Send(hub.Frame{MsgType: websocket.TextMessage, Data: encodedReply})
 }
 
-// 在您的 main 函数中:
 func main() {
-    // ... (现有设置：flag.Parse(), 加载配置, 设置日志记录器) ...
-	config, err := configs.LoadConfig(*configFile) // 示例
-	// ... (处理错误) ...
-	// 根据 config.Log.Level 设置日志记录器
-	// ...
+    // 示例：允许通过命令行标志指定配置文件路径
+    configFile := flag.String("config", "configs/config.yaml", "Path to the configuration file")
+    flag.Parse()
+
+    // 初始化日志 (推荐做法)
+	handler := logging.NewSlogTextHandler(os.Stdout, &logging.SlogHandlerOptions{Level: slog.LevelInfo})
+	logging.SetupDefaultSlog(handler)
+
+    // 加载配置
+	cfg, err := configs.LoadConfig(*configFile) // 假设 LoadConfig 是公开的 API
+	if err != nil {
+		slog.Error("加载配置文件失败", "path", *configFile, "error", err)
+		os.Exit(1)
+	}
+	// 您可能还想根据 cfg.Log 设置更具体的日志级别或格式
 
     // 2. 获取全局分发器实例
-    d := dispatcher.GetDispatcher() //
+    d := dispatcher.GetDispatcher() // 假设 GetDispatcher 是公开的 API
 
     // 3. 注册您的自定义处理器
     d.Register("my_custom_action", handleMyCustomAction)
-    slog.Info("已注册自定义消息处理器。")
+    slog.Info("已注册自定义消息处理器 'my_custom_action'")
 
     // 初始化并启动 GoHub 服务器
-    // NewGoHubServer 内部会为内置类型调用 handlers.RegisterHandlers，
-    // 这会添加到同一个分发器实例中。
-    server, err := NewGoHubServer(&config) //
+    // 假设 server.NewGoHubServer 是公开的 API
+    gohubServer, err := server.NewGoHubServer(cfg) 
     if err != nil {
-        slog.Error("创建服务器失败", "error", err)
+        slog.Error("创建 GoHub 服务器失败", "error", err)
         os.Exit(1)
     }
     
-    // ... (main 函数的其余部分：优雅关闭, server.Start()) ...
+    go func() {
+        slog.Info("GoHub 服务器正在启动...", "address", cfg.HTTP.Address)
+		if err := gohubServer.Start(); err != nil { // 假设 Start() 方法存在
+			slog.Error("GoHub 服务器启动失败", "error", err)
+			os.Exit(1)
+		}
+	}()
+    slog.Info("GoHub 服务器已在 "+cfg.HTTP.Address+" 监听", "url", "ws://localhost"+cfg.HTTP.Address+"/ws")
+
+
+	// 实现优雅关闭
+    quitChannel := make(chan os.Signal, 1)
+	signal.Notify(quitChannel, syscall.SIGINT, syscall.SIGTERM)
+	
+	receivedSignal := <-quitChannel
+	slog.Info("接收到关闭信号", "signal", receivedSignal.String())
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+
+	slog.Info("正在优雅地关闭 GoHub 服务器...")
+	if err := gohubServer.Shutdown(shutdownCtx); err != nil { // 假设 Shutdown(context.Context) 方法存在
+		slog.Error("服务器关闭失败", "error", err)
+	} else {
+		slog.Info("服务器已成功关闭")
+	}
 }
 ```
-*未来版本的 GoHub SDK 可能会提供更直接的处理器注册方法，以实现更封装的方式。*
+*未来版本的 GoHub SDK 可能会提供更直接的处理器注册方法或更封装的服务器构建方式。请关注 GoHub 的更新日志和官方文档。*
 
 ## 🧪 测试
 
@@ -387,15 +494,12 @@ go test ./...
 
 ## 💡 常见问题解答
 
-### 1. GoHub与基础框架Gorilla WebSocket的关系？
 
-GoHub建立在Gorilla WebSocket之上，Gorilla提供了基础的WebSocket协议实现，而GoHub则提供了完整的分布式架构、房间管理、消息分发和集群通信等企业级功能。GoHub可以看作是对Gorilla WebSocket的一个高级抽象和功能扩展，使其更适合构建复杂的实时应用。
-
-### 2. 如何实现跨节点的消息传递？
+### 1. 如何实现跨节点的消息传递？
 
 GoHub使用消息总线（NATS或Redis）在集群节点间传递消息。当一个节点需要向连接到其他节点的客户端发送消息时，它会通过消息总线广播这个消息。其他节点会接收到这个消息，并将其转发给相应的客户端。整个过程对开发者透明，您只需正常使用API，不需要关心客户端连接在哪个节点上。
 
-### 3. GoHub的分布式架构如何提高系统可靠性？
+### 2. GoHub的分布式架构如何提高系统可靠性？
 
 GoHub的分布式设计带来几个关键优势：
 - **高可用性**：单个节点故障不会影响整个系统
@@ -403,20 +507,6 @@ GoHub的分布式设计带来几个关键优势：
 - **负载均衡**：连接可以分散到多个节点上
 - **地理分布**：节点可以部署在不同区域，减少延迟
 
-### 4. 如何监控集群状态？
+### 3. 如何监控集群状态？
 
 GoHub通过Prometheus指标提供全面的监控能力，包括每个节点的连接数、消息处理量、房间数量等。您可以使用Grafana创建仪表板来可视化这些指标，实时监控集群健康状况。
-
-## 🤝 贡献
-
-欢迎贡献！请随时提交 Pull Request 或开启 Issue。
-
-在贡献之前，请：
-1.  确保您的代码符合 Go 的最佳实践和项目现有风格。
-2.  为您的更改编写或更新测试。
-3.  使用 `go fmt` 或 `gofumpt` 格式化您的代码。
-4.  考虑运行 `go vet` 和 `golangci-lint` (如果提供了配置文件)。
-
-## 📜 许可证
-
-GoHub 使用 MIT 许可证。详情请参阅仓库根目录下的 `LICENSE` 文件。 

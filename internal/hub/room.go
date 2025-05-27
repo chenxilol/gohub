@@ -190,7 +190,7 @@ func (rm *RoomManager) setupRoomSubscriptions() {
 			}
 
 			if roomCh == nil && err == nil {
-				slog.ErrorContext(rm.ctx, "RoomManager: RetryWithBackoffGeneric returned nil channel without error for room_bus_subscribe")
+				slog.ErrorContext(rm.ctx, "RoomManager: room bus subscribe returned nil channel without error")
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -235,7 +235,6 @@ func (rm *RoomManager) processRoomMessage(data []byte) {
 		slog.DebugContext(rm.ctx, "RoomManager ignoring duplicate room message from bus", "id", msgIDStr, "room_id", busMsg.RoomID)
 		return
 	}
-	rm.deduplicator.MarkProcessed(msgIDStr)
 
 	if busMsg.Type != "room" { // 确保与发布时使用的类型一致
 		slog.WarnContext(rm.ctx, "RoomManager received non-room message type on room topic", "type", busMsg.Type, "room_id", busMsg.RoomID)
@@ -258,6 +257,7 @@ func (rm *RoomManager) processRoomMessage(data []byte) {
 		slog.ErrorContext(rm.ctx, "RoomManager failed to broadcast bus message to local room clients", "room_id", busMsg.RoomID, "error", err)
 		return
 	}
+	rm.deduplicator.MarkProcessed(msgIDStr)
 }
 
 // CreateRoom 创建一个新房间

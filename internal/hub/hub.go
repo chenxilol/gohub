@@ -79,22 +79,6 @@ func generateNodeID() string {
 	return fmt.Sprintf("%s-%d-%x", hostname, os.Getpid(), time.Now().UnixNano())
 }
 
-// processBroadcastMessages 处理从给定的广播通道接收消息，直到上下文完成或通道关闭。
-func (h *Hub) processBroadcastMessages(ctx context.Context, broadcastCh <-chan []byte) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case msg, ok := <-broadcastCh:
-			if !ok {
-				slog.Warn("broadcast channel from bus closed")
-				return errors.New("broadcast channel closed")
-			}
-			h.processBusMessage(msg)
-		}
-	}
-}
-
 func (h *Hub) setupBusSubscriptions(ctx context.Context) {
 	go func() {
 		var broadcastCh <-chan []byte
@@ -133,20 +117,32 @@ func (h *Hub) setupBusSubscriptions(ctx context.Context) {
 	}()
 }
 
+// processBroadcastMessages 处理从给定的广播通道接收消息，直到上下文完成或通道关闭。
+func (h *Hub) processBroadcastMessages(ctx context.Context, broadcastCh <-chan []byte) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg, ok := <-broadcastCh:
+			if !ok {
+				slog.Warn("broadcast channel from bus closed")
+				return errors.New("broadcast channel closed")
+			}
+			h.processBusMessage(msg)
+		}
+	}
+}
+
 func (h *Hub) processBusMessage(data []byte) {
 	// 1. 首先尝试作为bus.Message解析，提取Data字段
 	var wrappedMsg bus.Message
 	if json.Unmarshal(data, &wrappedMsg) == nil && len(wrappedMsg.Data) > 0 {
-		// 使用提取的Data字段
 		data = wrappedMsg.Data
 	}
 
-	// 2. 尝试解析为BusMessage以获取广播内容
 	var busMsg BusMessage
 	if json.Unmarshal(data, &busMsg) == nil && busMsg.ID.String() != "" {
-		// 有效的BusMessage
 
-		// 去重检查
 		msgID := busMsg.ID.String()
 		if h.deduplicator.IsDuplicate(msgID) {
 			slog.Debug("ignoring duplicate bus message", "id", msgID)
@@ -394,7 +390,6 @@ func (h *Hub) localBroadcast(f Frame) {
 	count := 0
 	h.clients.Range(func(_, v interface{}) bool {
 		client := v.(*Client)
-		// 忽略发送错误，避免一个客户端影响所有人
 		if err := client.Send(f); err == nil {
 			count++
 		}
