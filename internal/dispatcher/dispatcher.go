@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"gohub/internal/hub"
+	"github.com/chenxilol/gohub/internal/hub"
 	"log/slog"
 	"sync"
 )

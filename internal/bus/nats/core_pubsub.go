@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 
 	"github.com/nats-io/nats.go"
 )

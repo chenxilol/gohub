@@ -2,7 +2,7 @@ package integration
 
 import (
 	"context"
-	"gohub/internal/hub"
+	"github.com/chenxilol/gohub/internal/hub"
 	"sync"
 	"time"
 )

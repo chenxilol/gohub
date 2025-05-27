@@ -3,14 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"gohub/configs"
-	"gohub/internal/sdk"
 	"log"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chenxilol/gohub/configs"
+	"github.com/chenxilol/gohub/internal/sdk"
 )
 
 // RedisDistributedTestConfig Redis分布式测试配置

@@ -3,7 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
-	"gohub/internal/auth"
+	"github.com/chenxilol/gohub/internal/auth"
 	"log/slog"
 	"sync"
 	"time"

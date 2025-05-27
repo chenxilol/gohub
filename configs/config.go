@@ -1,9 +1,9 @@
 package configs
 
 import (
-	"gohub/internal/bus/nats"
-	"gohub/internal/bus/redis"
-	"gohub/internal/hub"
+	"github.com/chenxilol/gohub/internal/bus/nats"
+	"github.com/chenxilol/gohub/internal/bus/redis"
+	"github.com/chenxilol/gohub/internal/hub"
 	"strings"
 	"time"
 

@@ -3,7 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 	"sync"
 	"testing"
 	"time"

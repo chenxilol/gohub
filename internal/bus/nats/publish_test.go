@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 )
 
 // TestNatsBus_PublishSuccessful 测试成功发布

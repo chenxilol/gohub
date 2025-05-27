@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 )
 
 // subscribeRoutine 订阅Redis频道

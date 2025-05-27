@@ -4,9 +4,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"gohub/internal/auth"
-	"gohub/internal/hub"
-	"gohub/internal/metrics"
+	"github.com/chenxilol/gohub/internal/auth"
+	"github.com/chenxilol/gohub/internal/hub"
+	"github.com/chenxilol/gohub/internal/metrics"
 	"log/slog"
 	"time"
 )

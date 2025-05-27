@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 
 	"github.com/alicebob/miniredis/v2"
 )

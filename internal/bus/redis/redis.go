@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 
 	"github.com/redis/go-redis/v9"
 )

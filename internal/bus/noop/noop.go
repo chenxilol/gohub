@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 )
 
 // 适用于单节点模式，不需要跨节点通信

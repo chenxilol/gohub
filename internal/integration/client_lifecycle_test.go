@@ -2,9 +2,9 @@ package integration
 
 import (
 	"context"
-	"gohub/internal/auth"
-	"gohub/internal/bus/noop"
-	"gohub/internal/hub"
+	"github.com/chenxilol/gohub/internal/auth"
+	"github.com/chenxilol/gohub/internal/bus/noop"
+	"github.com/chenxilol/gohub/internal/hub"
 	"testing"
 	"time"
 

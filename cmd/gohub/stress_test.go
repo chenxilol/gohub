@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"gohub/configs"
+	"github.com/chenxilol/gohub/configs"
 	"log"
 	"runtime"
 	"sync"

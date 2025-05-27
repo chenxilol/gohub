@@ -1,4 +1,4 @@
-module gohub
+module github.com/chenxilol/gohub
 
 go 1.24.1
 

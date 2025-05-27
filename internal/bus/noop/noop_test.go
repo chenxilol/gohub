@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 )
 
 // TestNoopBus_PublishSubscribe 测试NoopBus的Publish和Subscribe功能

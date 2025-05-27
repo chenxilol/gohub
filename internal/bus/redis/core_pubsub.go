@@ -3,7 +3,7 @@ package redis
 import (
 	"context"
 
-	"gohub/internal/bus"
+	"github.com/chenxilol/gohub/internal/bus"
 )
 
 func (r *RedisBus) Publish(ctx context.Context, topic string, data []byte) error {

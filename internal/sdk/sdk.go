@@ -4,8 +4,8 @@ package sdk
 import (
 	"context"
 	"errors"
-	"gohub/internal/auth"
-	"gohub/internal/hub"
+	"github.com/chenxilol/gohub/internal/auth"
+	"github.com/chenxilol/gohub/internal/hub"
 	"log/slog"
 	"time"
 )
