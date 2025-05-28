@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// 客户端事件类型
 type EventType string
 
 const (
@@ -25,7 +24,6 @@ const (
 	EventRoomMessage        EventType = "room_message"        // 房间消息
 )
 
-// 客户端事件结构
 type Event struct {
 	Type     EventType         // 事件类型
 	ClientID string            // 客户端ID
@@ -36,7 +34,6 @@ type Event struct {
 	Extra    map[string]any    // 额外数据
 }
 
-// 事件处理器函数类型
 type EventHandler func(ctx context.Context, event Event) error
 
 // SDK 服务端接口
