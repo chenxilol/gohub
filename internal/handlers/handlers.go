@@ -4,11 +4,13 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"github.com/chenxilol/gohub/internal/auth"
-	"github.com/chenxilol/gohub/internal/hub"
-	"github.com/chenxilol/gohub/internal/metrics"
 	"log/slog"
+
 	"time"
+
+	"github.com/chenxilol/gohub/internal/metrics"
+	"github.com/chenxilol/gohub/pkg/auth"
+	"github.com/chenxilol/gohub/pkg/hub"
 )
 
 // 消息类型常量

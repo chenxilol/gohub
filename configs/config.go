@@ -1,11 +1,12 @@
 package configs
 
 import (
-	"github.com/chenxilol/gohub/internal/bus/nats"
-	"github.com/chenxilol/gohub/internal/bus/redis"
-	"github.com/chenxilol/gohub/internal/hub"
 	"strings"
 	"time"
+
+	"github.com/chenxilol/gohub/pkg/bus/nats"
+	"github.com/chenxilol/gohub/pkg/bus/redis"
+	"github.com/chenxilol/gohub/pkg/hub"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"

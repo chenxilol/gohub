@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/chenxilol/gohub/configs"
-	"github.com/chenxilol/gohub/internal/sdk"
+	"github.com/chenxilol/gohub/pkg/sdk"
 )
 
 // RedisDistributedTestConfig Redis分布式测试配置

@@ -2,9 +2,10 @@ package integration
 
 import (
 	"context"
-	"github.com/chenxilol/gohub/internal/hub"
 	"sync"
 	"time"
+
+	"github.com/chenxilol/gohub/pkg/hub"
 )
 
 // MockWSConn 用于测试的WebSocket连接模拟

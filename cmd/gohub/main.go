@@ -3,21 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
-	"github.com/chenxilol/gohub/configs"
-	"github.com/chenxilol/gohub/internal/auth"
-	"github.com/chenxilol/gohub/internal/bus"
-	hubnats "github.com/chenxilol/gohub/internal/bus/nats"
-	"github.com/chenxilol/gohub/internal/bus/noop"
-	hubredis "github.com/chenxilol/gohub/internal/bus/redis"
-	"github.com/chenxilol/gohub/internal/dispatcher"
-	"github.com/chenxilol/gohub/internal/handlers"
-	"github.com/chenxilol/gohub/internal/hub"
-	"github.com/chenxilol/gohub/internal/metrics"
-	"github.com/chenxilol/gohub/internal/sdk"
-	internalwebsocket "github.com/chenxilol/gohub/internal/websocket"
 	"io/ioutil"
 	"log/slog"
 	"net/http"
@@ -26,6 +13,19 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/chenxilol/gohub/configs"
+	"github.com/chenxilol/gohub/internal/dispatcher"
+	"github.com/chenxilol/gohub/internal/handlers"
+	"github.com/chenxilol/gohub/internal/metrics"
+	internalwebsocket "github.com/chenxilol/gohub/internal/websocket"
+	"github.com/chenxilol/gohub/pkg/auth"
+	"github.com/chenxilol/gohub/pkg/bus"
+	hubnats "github.com/chenxilol/gohub/pkg/bus/nats"
+	"github.com/chenxilol/gohub/pkg/bus/noop"
+	hubredis "github.com/chenxilol/gohub/pkg/bus/redis"
+	"github.com/chenxilol/gohub/pkg/hub"
+	"github.com/chenxilol/gohub/pkg/sdk"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -476,51 +476,47 @@ func main() {
 	// 3. 初始化 Prometheus 指标 (复用 GoHub 的)
 	metrics.Default() //
 
-	// 4. 创建并启动应用服务器
-	appServer, err := NewAppServer(&gohubConfig)
+	// 4. 创建并运行 AppServer
+	app, err := NewAppServer(&gohubConfig)
 	if err != nil {
-		slog.Error("创建应用程序服务器失败", "error", err)
+		slog.Error("创建 AppServer 失败", "error", err)
 		os.Exit(1)
 	}
 
-	// 5. 启动 HTTP 服务
+	// 5. 启动服务器
 	go func() {
-		if err := appServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("应用程序服务器启动失败", "error", err)
-			// 根据情况可能需要 os.Exit(1)
+		if err := app.Start(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP 服务器启动失败", "error", err)
+			os.Exit(1)
 		}
 	}()
 
-	// 6. 实现优雅关闭
+	// 6. 优雅地关闭
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	receivedSignal := <-quit
-	slog.Info("收到关闭信号", "signal", receivedSignal.String())
+	<-quit
+	slog.Info("正在关闭服务器...")
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second) // 10秒关闭超时
-	defer cancelShutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	if err := appServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("应用程序服务器关闭期间发生错误", "error", err)
-	} else {
-		slog.Info("应用程序服务器已成功关闭")
+	if err := app.Shutdown(ctx); err != nil {
+		slog.Error("服务器关闭失败", "error", err)
+		os.Exit(1)
 	}
+
+	slog.Info("服务器已成功关闭")
 }
 
 // --- 辅助函数 (可以从 GoHub 的 cmd/main.go 中借鉴或根据需要调整) ---
 
-// createMessageBus 根据配置创建相应的消息总线
+// createMessageBus 根据配置创建并返回一个 MessageBus 实例
 func createMessageBus(clusterConfig configs.Cluster) (bus.MessageBus, error) {
-	switch strings.ToLower(clusterConfig.BusType) {
+	switch clusterConfig.BusType {
 	case "nats":
-		slog.Info("正在创建 NATS 消息总线")
-		return hubnats.New(clusterConfig.NATS) //
+		return hubnats.New(clusterConfig.NATS)
 	case "redis":
-		slog.Info("正在创建 Redis 消息总线")
-		return hubredis.New(clusterConfig.Redis) //
-	case "noop", "": // 默认或明确指定 noop
-		slog.Info("正在创建 NoOp (空操作) 消息总线")
-		return noop.New(), nil //
+		return hubredis.New(clusterConfig.Redis)
 	default:
 		return nil, fmt.Errorf("不支持的消息总线类型: %s", clusterConfig.BusType)
 	}

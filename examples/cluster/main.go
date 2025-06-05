@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	hubnats "github.com/chenxilol/gohub/internal/bus/nats"
-	hubredis "github.com/chenxilol/gohub/internal/bus/redis"
+	hubnats "github.com/chenxilol/gohub/pkg/bus/nats"
+	hubredis "github.com/chenxilol/gohub/pkg/bus/redis"
 	"github.com/chenxilol/gohub/server"
 )
 

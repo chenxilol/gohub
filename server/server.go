@@ -11,23 +11,22 @@ import (
 	"time"
 
 	"github.com/chenxilol/gohub/configs"
-	"github.com/chenxilol/gohub/internal/auth"
-	"github.com/chenxilol/gohub/internal/bus"
-	hubnats "github.com/chenxilol/gohub/internal/bus/nats"
-	"github.com/chenxilol/gohub/internal/bus/noop"
-	hubredis "github.com/chenxilol/gohub/internal/bus/redis"
 	"github.com/chenxilol/gohub/internal/dispatcher"
 	"github.com/chenxilol/gohub/internal/handlers"
-	"github.com/chenxilol/gohub/internal/hub"
 	"github.com/chenxilol/gohub/internal/metrics"
-	"github.com/chenxilol/gohub/internal/sdk"
 	internalwebsocket "github.com/chenxilol/gohub/internal/websocket"
+	"github.com/chenxilol/gohub/pkg/auth"
+	"github.com/chenxilol/gohub/pkg/bus"
+	hubnats "github.com/chenxilol/gohub/pkg/bus/nats"
+	"github.com/chenxilol/gohub/pkg/bus/noop"
+	hubredis "github.com/chenxilol/gohub/pkg/bus/redis"
+	"github.com/chenxilol/gohub/pkg/hub"
+	"github.com/chenxilol/gohub/pkg/sdk"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// HandlerFunc 是消息处理函数的类型
 type HandlerFunc func(ctx context.Context, client *hub.Client, data json.RawMessage) error
 
 // EventHandlerFunc 是事件处理函数的类型
@@ -89,13 +88,11 @@ func NewServer(opts *Options) (*Server, error) {
 	if opts == nil {
 		opts = defaultOptions()
 	} else {
-		// 填充默认值
 		fillDefaults(opts)
 	}
 	config := buildConfig(opts)
 	setupLogging(opts.LogLevel)
 
-	// 创建服务器实例
 	s := &Server{
 		options:   opts,
 		config:    config,
@@ -109,19 +106,15 @@ func NewServer(opts *Options) (*Server, error) {
 			ReadBufferSize:  opts.ReadBufferSize,
 			WriteBufferSize: opts.WriteBufferSize,
 			CheckOrigin: func(r *http.Request) bool {
-				return true // 在生产环境中应该有更严格的检查
+				return true
 			},
 		}
 	}
 
-	// 初始化组件
 	if err := s.initComponents(); err != nil {
 		return nil, err
 	}
-	// 注册默认处理器
 	handlers.RegisterHandlers(s.dispatcher)
-
-	// 设置HTTP路由
 	s.setupRoutes()
 
 	return s, nil

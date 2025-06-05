@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/chenxilol/gohub/internal/hub"
 	"log/slog"
 	"sync"
+
+	"github.com/chenxilol/gohub/pkg/hub"
 )
 
 var (

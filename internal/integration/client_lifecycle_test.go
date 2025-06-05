@@ -2,11 +2,12 @@ package integration
 
 import (
 	"context"
-	"github.com/chenxilol/gohub/internal/auth"
-	"github.com/chenxilol/gohub/internal/bus/noop"
-	"github.com/chenxilol/gohub/internal/hub"
 	"testing"
 	"time"
+
+	"github.com/chenxilol/gohub/pkg/auth"
+	"github.com/chenxilol/gohub/pkg/bus/noop"
+	"github.com/chenxilol/gohub/pkg/hub"
 
 	"github.com/gorilla/websocket"
 )

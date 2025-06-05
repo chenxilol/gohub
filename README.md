@@ -59,7 +59,7 @@ import (
 	"encoding/json"
 	"log"
 	"github.com/chenxilol/gohub/server"
-	"github.com/chenxilol/gohub/internal/hub"
+	"github.com/chenxilol/gohub/pkg/hub"
 )
 
 func main() {
@@ -175,7 +175,7 @@ srv.HandleFunc("/api/broadcast/room", func(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 })
 ```
-```go
+
 
 ## 📊 与其他WebSocket框架对比
 
@@ -191,7 +191,7 @@ srv.HandleFunc("/api/broadcast/room", func(w http.ResponseWriter, r *http.Reques
 | SDK支持 | ✅ 服务端 | ❌ 无 | ❌ 无 | ⚠️ 有限 |
 | 活跃维护 | ✅ 是 | ⚠️ 有限 | ✅ 是 | ⚠️ 有限 |
 
-
+```go
 // 获取 SDK 实例
 sdk := srv.SDK()
 

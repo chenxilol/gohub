@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chenxilol/gohub/internal/hub"
-	"github.com/chenxilol/gohub/internal/sdk"
+	"github.com/chenxilol/gohub/pkg/hub"
+	"github.com/chenxilol/gohub/pkg/sdk"
 	"github.com/chenxilol/gohub/server"
 )
 
