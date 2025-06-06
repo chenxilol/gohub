@@ -180,33 +180,33 @@ func (h *Hub) processBusMessage(data []byte) {
 // Register 注册一个客户端到Hub
 func (h *Hub) Register(c *Client) {
 	oldClientExists := false
-	if oldClient, loaded := h.clients.LoadOrStore(c.ID(), c); loaded {
+	if oldClient, loaded := h.clients.LoadOrStore(c.GetID(), c); loaded {
 		// 如果ID已存在，关闭旧连接
-		slog.Info("replacing existing connection", "client_id", c.ID())
+		slog.Info("replacing existing connection", "client_id", c.GetID())
 		oldC := oldClient.(*Client)
 		oldC.shutdown()
 
 		// 清理旧的单播订阅
 		if h.bus != nil {
-			unicastTopic := FormatUnicastTopic(c.ID())
+			unicastTopic := FormatUnicastTopic(c.GetID())
 			_ = h.bus.Unsubscribe(unicastTopic)
-			slog.Debug("cleaned up old unicast subscription", "client_id", c.ID(), "topic", unicastTopic)
+			slog.Debug("cleaned up old unicast subscription", "client_id", c.GetID(), "topic", unicastTopic)
 		}
 
-		h.clients.Store(c.ID(), c)
+		h.clients.Store(c.GetID(), c)
 		oldClientExists = true
 	}
 
 	// 对于每个新客户端，订阅其单播消息(如果使用消息总线)
 	if h.bus != nil {
-		unicastTopic := FormatUnicastTopic(c.ID())
-		go h.subscribeClientUnicast(c.ID(), unicastTopic)
+		unicastTopic := FormatUnicastTopic(c.GetID())
+		go h.subscribeClientUnicast(c.GetID(), unicastTopic)
 		if oldClientExists {
-			slog.Debug("re-established unicast subscription for replaced client", "client_id", c.ID(), "topic", unicastTopic)
+			slog.Debug("re-established unicast subscription for replaced client", "client_id", c.GetID(), "topic", unicastTopic)
 		}
 	}
 
-	slog.Info("client registered", "id", c.ID(), "total", h.GetClientCount())
+	slog.Info("client registered", "id", c.GetID(), "total", h.GetClientCount())
 }
 
 // processUnicastMessages 处理从给定的单播通道接收消息，直到上下文完成、通道关闭或客户端断开连接。
@@ -305,7 +305,6 @@ func (h *Hub) Push(id string, f Frame) error {
 		return v.(*Client).Send(f)
 	}
 
-	// 如果启用了消息总线且客户端不在本地，尝试通过总线发送
 	if h.bus != nil {
 		topic := FormatUnicastTopic(id)
 		ctx, cancel := context.WithTimeout(context.Background(), h.cfg.BusTimeout)
@@ -315,7 +314,6 @@ func (h *Hub) Push(id string, f Frame) error {
 			slog.Warn("failed to publish unicast via bus", "client", id, "error", err)
 			return ErrClientNotFound
 		}
-		// 消息已通过总线发送，返回nil
 		return nil
 	}
 

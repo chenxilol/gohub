@@ -20,7 +20,6 @@ func (m MessageID) String() string {
 	return fmt.Sprintf("%s-%d-%d", m.NodeID, m.Timestamp, m.Sequence)
 }
 
-// BusMessage 总线消息格式，包含元数据和负载
 type BusMessage struct {
 	ID            MessageID       `json:"id"`                // 消息唯一ID
 	Type          string          `json:"type"`              // 消息类型(broadcast, room, unicast)

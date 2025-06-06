@@ -184,7 +184,7 @@ func IsWebsocketCloseError(err error) bool {
 		websocket.CloseNoStatusReceived)
 }
 
-func (c *Client) ID() string {
+func (c *Client) GetID() string {
 	return c.id
 }
 

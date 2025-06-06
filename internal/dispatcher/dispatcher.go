@@ -52,7 +52,7 @@ func (d *Dispatcher) Register(msgType string, handler hub.MessageHandlerFunc) { 
 func (d *Dispatcher) DecodeAndRoute(ctx context.Context, client *hub.Client, message []byte) error {
 	var msg hub.Message
 	if err := json.Unmarshal(message, &msg); err != nil {
-		slog.Error("failed to decode message", "error", err, "client", client.ID())
+		slog.Error("failed to decode message", "error", err, "client", client.GetID())
 		return ErrInvalidFormat
 	}
 
@@ -62,14 +62,14 @@ func (d *Dispatcher) DecodeAndRoute(ctx context.Context, client *hub.Client, mes
 	d.mu.RUnlock()
 
 	if !exists {
-		slog.Error("unknown message type", "type", msg.MessageType, "client", client.ID())
+		slog.Error("unknown message type", "type", msg.MessageType, "client", client.GetID())
 		return ErrUnknownMessageType
 	}
 
 	// 处理消息
 	err := handler(ctx, client, msg.Data)
 	if err != nil {
-		slog.Error("failed to handle message", "type", msg.MessageType, "client", client.ID(), "error", err)
+		slog.Error("failed to handle message", "type", msg.MessageType, "client", client.GetID(), "error", err)
 		return err
 	}
 

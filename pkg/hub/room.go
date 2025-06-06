@@ -61,12 +61,12 @@ func (r *Room) AddClient(client *Client) error {
 	if r.MaxClients > 0 && len(r.clients) >= r.MaxClients {
 		return ErrRoomIsFull
 	}
-	if _, exists := r.clients[client.ID()]; exists {
+	if _, exists := r.clients[client.GetID()]; exists {
 		return ErrClientAlreadyInRoom
 	}
-	r.clients[client.ID()] = client
+	r.clients[client.GetID()] = client
 	metrics.RoomJoined()
-	slog.Info("client joined room", "client_id", client.ID(), "room_id", r.ID, "room_name", r.Name, "total_clients", len(r.clients))
+	slog.Info("client joined room", "client_id", client.GetID(), "room_id", r.ID, "room_name", r.Name, "total_clients", len(r.clients))
 	return nil
 }
 

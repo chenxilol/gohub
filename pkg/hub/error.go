@@ -73,16 +73,10 @@ func SendError(client *Client, err *ErrorResponse) error {
 		return err2
 	}
 
-	// 序列化消息
-	data, err2 := errMsg.Encode()
-	if err2 != nil {
-		return err2
-	}
-
 	// 发送到客户端
 	return client.Send(Frame{
 		MsgType: 1, // 文本消息
-		Data:    data,
+		Data:    errMsg.Encode(),
 	})
 }
 

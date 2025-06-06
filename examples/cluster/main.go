@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chenxilol/gohub/pkg/hub"
+
 	hubnats "github.com/chenxilol/gohub/pkg/bus/nats"
 	hubredis "github.com/chenxilol/gohub/pkg/bus/redis"
 	"github.com/chenxilol/gohub/server"
@@ -70,6 +72,33 @@ func redisExample() {
 
 // runServer 运行服务器的通用逻辑
 func runServer(srv *server.Server) {
+	// 客户端发来messageType 为"echo"的消息时，执行此处理函数
+	err := srv.RegisterHandler("echo", func(ctx context.Context, client *hub.Client, data json.RawMessage) error {
+		// 处理接收到的消息
+		log.Printf("Received echo request from client %s: %s", client.GetID(), data)
+
+		response := map[string]interface{}{
+			"message_type": "echo_reply",
+			"data": map[string]string{
+				"echo": string(data),
+			},
+		}
+
+		responseBytes, _ := json.Marshal(response)
+		frame := hub.Frame{
+			MsgType: 1,
+			Data:    responseBytes,
+		}
+		if err := client.Send(frame); err != nil {
+			log.Printf("Failed to send echo response to client %s: %v", client.GetID(), err)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return
+	}
+
 	// 添加房间广播API
 	srv.HandleFunc("/api/broadcast/room", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -99,13 +128,9 @@ func runServer(srv *server.Server) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// 启动服务器
-	go func() {
-		log.Println("Starting cluster server...")
-		if err := srv.Start(); err != nil {
-			log.Fatal("Server error:", err)
-		}
-	}()
+	if err := srv.Start(); err != nil {
+		log.Fatal("Server error:", err)
+	}
 
 	// 等待退出信号
 	quit := make(chan os.Signal, 1)

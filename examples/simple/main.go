@@ -51,12 +51,9 @@ func main() {
 	})
 
 	// 启动服务器
-	go func() {
-		log.Println("Starting server on :8080...")
-		if err := srv.Start(); err != nil {
-			log.Fatal("Server error:", err)
-		}
-	}()
+	if err := srv.Start(); err != nil {
+		log.Fatal("Server error:", err)
+	}
 
 	// 等待退出信号
 	quit := make(chan os.Signal, 1)

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -65,13 +66,10 @@ type Options struct {
 	// 日志级别: "debug", "info", "warn", "error"，默认 "info"
 	LogLevel string
 
-	// 自定义WebSocket升级器
 	Upgrader *websocket.Upgrader
 }
 
-// Server GoHub服务器
 type Server struct {
-	options     *Options
 	config      *configs.Config
 	authService *auth.JWTService
 	messageBus  bus.MessageBus
@@ -91,10 +89,9 @@ func NewServer(opts *Options) (*Server, error) {
 		fillDefaults(opts)
 	}
 	config := buildConfig(opts)
-	setupLogging(opts.LogLevel)
+	setupLogging(config.Log.Level)
 
 	s := &Server{
-		options:   opts,
 		config:    config,
 		customMux: http.NewServeMux(),
 	}
@@ -103,8 +100,8 @@ func NewServer(opts *Options) (*Server, error) {
 		s.upgrader = opts.Upgrader
 	} else {
 		s.upgrader = &websocket.Upgrader{
-			ReadBufferSize:  opts.ReadBufferSize,
-			WriteBufferSize: opts.WriteBufferSize,
+			ReadBufferSize:  config.Server.Hub.ReadBufferSize,
+			WriteBufferSize: config.Server.Hub.WriteBufferSize,
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
@@ -115,7 +112,6 @@ func NewServer(opts *Options) (*Server, error) {
 		return nil, err
 	}
 	handlers.RegisterHandlers(s.dispatcher)
-	s.setupRoutes()
 
 	return s, nil
 }
@@ -149,7 +145,7 @@ func (s *Server) SDK() *sdk.GoHubSDK {
 
 // Start 启动服务器
 func (s *Server) Start() error {
-	slog.Info("Starting GoHub server", "address", s.options.Address)
+	slog.Info("Starting GoHub server", "address", s.config.Server.Addr)
 
 	// 初始化Prometheus指标
 	metrics.Default()
@@ -166,97 +162,67 @@ func (s *Server) Start() error {
 	mainMux.Handle("/", s.customMux)
 
 	s.httpServer = &http.Server{
-		Addr:    s.options.Address,
+		Addr:    s.config.Server.Addr,
 		Handler: mainMux,
 	}
 
-	return s.httpServer.ListenAndServe()
+	go func() {
+		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("HTTP server error", "error", err)
+		}
+	}()
+
+	return nil
 }
 
-// Shutdown 优雅关闭服务器
 func (s *Server) Shutdown(ctx context.Context) error {
 	slog.Info("Shutting down GoHub server...")
 
-	// 关闭SDK
 	if err := s.sdk.Close(); err != nil {
 		slog.Error("Failed to close SDK", "error", err)
 	}
-
-	// 关闭Hub
 	if err := s.hub.Close(); err != nil {
 		slog.Error("Failed to close hub", "error", err)
 	}
-
-	// 关闭消息总线
 	if s.messageBus != nil {
 		if err := s.messageBus.Close(); err != nil {
 			slog.Error("Failed to close message bus", "error", err)
 		}
 	}
 
-	// 关闭HTTP服务器
 	return s.httpServer.Shutdown(ctx)
 }
 
 // initComponents 初始化内部组件
 func (s *Server) initComponents() error {
-	var err error
-	if s.options.EnableCluster {
-		s.messageBus, err = createMessageBus(s.config.Cluster)
+	s.messageBus = noop.New()
+	if s.config.Cluster.Enabled {
+		messageBus, err := createMessageBus(s.config.Cluster)
 		if err != nil {
 			return fmt.Errorf("failed to create message bus: %w", err)
 		}
-	} else {
-		s.messageBus = noop.New()
+		s.messageBus = messageBus
 	}
 
 	// 创建认证服务
-	if s.options.EnableAuth {
-		s.authService = auth.NewJWTService(s.options.JWTSecretKey, s.options.JWTIssuer)
+	if s.config.Auth.Enabled {
+		s.authService = auth.NewJWTService(s.config.Auth.SecretKey, s.config.Auth.Issuer)
 	}
 
-	// 创建分发器
 	s.dispatcher = dispatcher.GetDispatcher()
-
-	// 创建Hub
 	s.hub = hub.NewHub(s.messageBus, s.config.Hub)
-
-	// 创建SDK
 	s.sdk = sdk.NewSDK(s.hub, s.dispatcher)
 
 	return nil
 }
 
-// setupRoutes 设置HTTP路由
-func (s *Server) setupRoutes() {
-	// 健康检查已在Start中注册
-}
-
 // handleWebSocket 处理WebSocket连接
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// 认证
-	var claims *auth.TokenClaims
-	if s.options.EnableAuth {
-		token := extractToken(r)
-		if token != "" {
-			var err error
-			claims, err = s.authService.Authenticate(r.Context(), token)
-			if err != nil {
-				slog.Warn("WebSocket authentication failed", "error", err, "remoteAddr", r.RemoteAddr)
-				http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
-				metrics.RecordAuthFailure()
-				return
-			}
-			metrics.RecordAuthSuccess()
-		} else if !s.options.AllowAnonymous {
-			slog.Warn("WebSocket connection attempt without token", "remoteAddr", r.RemoteAddr)
-			http.Error(w, "Unauthorized: Token required", http.StatusUnauthorized)
-			metrics.RecordAuthFailure()
-			return
-		}
+	claims, ok := s.authenticateWebSocket(w, r)
+	if !ok {
+		return // 错误已发送
 	}
 
-	// 升级连接
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("Failed to upgrade WebSocket", "error", err, "remoteAddr", r.RemoteAddr)
@@ -264,17 +230,51 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 生成客户端ID
+	s.setupClient(conn, r, claims)
+}
+
+// authenticateWebSocket 对WebSocket连接进行认证。
+func (s *Server) authenticateWebSocket(w http.ResponseWriter, r *http.Request) (*auth.TokenClaims, bool) {
+	if !s.config.Auth.Enabled {
+		return nil, true
+	}
+
+	token := extractToken(r)
+	if token == "" {
+		if !s.config.Auth.AllowAnonymous {
+			slog.Warn("WebSocket connection attempt without token", "remoteAddr", r.RemoteAddr)
+			http.Error(w, "Unauthorized: Token required", http.StatusUnauthorized)
+			metrics.RecordAuthFailure()
+			return nil, false
+		}
+		return nil, true // 允许匿名
+	}
+
+	claims, err := s.authService.Authenticate(r.Context(), token)
+	if err != nil {
+		slog.Warn("WebSocket authentication failed", "error", err, "remoteAddr", r.RemoteAddr)
+		http.Error(w, "Unauthorized: Invalid token", http.StatusUnauthorized)
+		metrics.RecordAuthFailure()
+		return nil, false
+	}
+
+	metrics.RecordAuthSuccess()
+	return claims, true
+}
+
+// setupClient 创建、配置并注册新客户端。
+func (s *Server) setupClient(conn *websocket.Conn, r *http.Request, claims *auth.TokenClaims) {
 	clientID := generateClientID(r, claims)
 
-	// 创建客户端
 	wsAdapter := internalwebsocket.NewGorillaConn(conn)
-	ctx := context.WithValue(context.Background(), "hub", s.hub)
+	// 这个ctx是给client内部的goroutine使用的，它可能会在client断开连接时被取消。
+	clientCtx := context.WithValue(context.Background(), "hub", s.hub)
 
 	onClose := func(id string) {
 		s.hub.Unregister(id)
 		metrics.ClientDisconnected()
-		s.sdk.TriggerEvent(ctx, sdk.Event{
+		// 使用一个新的、独立的context来触发事件，避免clientCtx被取消导致事件发送失败
+		s.sdk.TriggerEvent(context.Background(), sdk.Event{
 			Type:     sdk.EventClientDisconnected,
 			ClientID: id,
 			Time:     time.Now(),
@@ -283,18 +283,17 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Client disconnected", "clientID", id)
 	}
 
-	client := hub.NewClient(ctx, clientID, wsAdapter, s.config.Hub, onClose, s.dispatcher)
+	client := hub.NewClient(clientCtx, clientID, wsAdapter, s.config.Hub, onClose, s.dispatcher)
 
 	if claims != nil {
 		client.SetAuthClaims(claims)
 	}
 
-	// 注册客户端
 	s.hub.Register(client)
 	metrics.ClientConnected()
 
-	// 触发连接事件
-	s.sdk.TriggerEvent(ctx, sdk.Event{
+	// 使用一个新的、独立的context来触发事件
+	s.sdk.TriggerEvent(context.Background(), sdk.Event{
 		Type:     sdk.EventClientConnected,
 		ClientID: clientID,
 		Time:     time.Now(),
@@ -316,10 +315,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"version": s.config.Version,
 		"time":    time.Now().Format(time.RFC3339),
 	}
-	_ = json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		slog.Error("Failed to write health check response", "error", err)
+	}
 }
-
-// 辅助函数
 
 func defaultOptions() *Options {
 	return &Options{

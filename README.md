@@ -214,6 +214,105 @@ sdk.BroadcastToRoom("room-1", []byte(`{"type":"room","message":"Welcome!"}`))
 members, _ := sdk.GetRoomMembers("room-1")
 ```
 
+## 🔌 客户端连接
+
+### JavaScript 示例
+
+```javascript
+// 连接到服务器
+const ws = new WebSocket('ws://localhost:8080/ws');
+
+// 如果启用了认证
+// const ws = new WebSocket('ws://localhost:8080/ws?token=your-jwt-token');
+
+ws.onopen = () => {
+	console.log('Connected to GoHub');
+	
+	// 发送消息
+	ws.send(JSON.stringify({
+		message_type: "echo",
+		data: { text: "Hello, GoHub!" }
+	}));
+};
+
+ws.onmessage = (event) => {
+	const message = JSON.parse(event.data);
+	console.log('Received:', message);
+};
+```
+
+## 🆔 客户端ID管理
+
+GoHub 提供了多种方式来识别和管理客户端，后续会添加自定义ID。
+
+### 客户端ID获取方式
+
+1. **JWT认证获取**
+
+当启用JWT认证时，系统默认从JWT的`sub`(Subject)字段提取客户端ID：
+
+```go
+srv, err := server.NewServer(&server.Options{
+	EnableAuth:   true,
+	JWTSecretKey: "your-secret-key",
+	JWTIssuer:    "your-app-name",
+	// 指定JWT中客户端ID的字段名（默认为"sub"）
+	JWTSubjectClaim: "user_id", 
+})
+```
+
+JWT示例：
+```json
+{
+  "sub": "user-123",
+  "name": "张三",
+  "iat": 1516239022
+}
+```
+
+2. **URL查询参数获取**
+
+也可以通过URL参数传递客户端ID：
+
+```go
+srv, err := server.NewServer(&server.Options{
+	// 允许通过URL查询参数获取客户端ID
+	EnableQueryClientID: true,
+	// 指定URL参数名（默认为"client_id"）
+	QueryClientIDParam: "user", 
+})
+```
+
+客户端连接示例：
+```javascript
+const ws = new WebSocket('ws://localhost:8080/ws?client_id=user-456');
+```
+
+
+### 匿名客户端处理
+
+对于匿名连接，系统会自动生成唯一客户端ID
+
+生成的ID示例：`guest-a1b2c3d4-e5f6`
+
+### 服务端获取客户端ID
+
+处理连接和消息时，可以通过Client对象获取ID：
+
+```go
+srv.RegisterHandler("echo", func(ctx context.Context, client *hub.Client, data json.RawMessage) error {
+	// 获取客户端ID
+	clientID := client.GetID()
+	log.Printf("收到来自客户端 %s 的消息", clientID)
+	
+	// 使用客户端ID进行业务逻辑处理
+	return client.Send(hub.Frame{
+		MsgType: 1,
+		Data:    data,
+	})
+})
+```
+
 ## 📚 配置选项
 
 ```go
@@ -240,33 +339,6 @@ type Options struct {
 	// 日志级别: "debug", "info", "warn", "error"
 	LogLevel string
 }
-```
-
-## 🔌 客户端连接
-
-### JavaScript 示例
-
-```javascript
-// 连接到服务器
-const ws = new WebSocket('ws://localhost:8080/ws');
-
-// 如果启用了认证
-// const ws = new WebSocket('ws://localhost:8080/ws?token=your-jwt-token');
-
-ws.onopen = () => {
-	console.log('Connected to GoHub');
-	
-	// 发送消息
-	ws.send(JSON.stringify({
-		message_type: "echo",
-		data: { text: "Hello, GoHub!" }
-	}));
-};
-
-ws.onmessage = (event) => {
-	const message = JSON.parse(event.data);
-	console.log('Received:', message);
-};
 ```
 
 ## 📊 内置端点

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -32,8 +33,13 @@ func NewMessage(messageID int, messageType string, data interface{}) (*Message, 
 }
 
 // Encode 将消息编码为JSON
-func (m *Message) Encode() ([]byte, error) {
-	return json.Marshal(m)
+func (m *Message) Encode() []byte {
+	message, err := json.Marshal(m)
+	if err != nil {
+		slog.Error("failed to encode message", "error", err, "message", m)
+		return nil
+	}
+	return message
 }
 
 // ReplyTo 创建一个对指定消息的回复

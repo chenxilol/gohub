@@ -1,4 +1,3 @@
-// Package nats 提供基于NATS的消息总线实现
 package nats
 
 import (
@@ -60,17 +59,15 @@ type NatsBus struct {
 
 // New 创建一个新的NatsBus实例
 func New(cfg Config) (*NatsBus, error) {
-	// 设置NATS连接选项
 	opts := []nats.Option{
 		nats.Name(cfg.Name),
 		nats.ReconnectWait(cfg.ReconnectWait),
 		nats.MaxReconnects(cfg.MaxReconnects),
 		nats.Timeout(cfg.ConnectTimeout),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			slog.Warn("nats disconnected", "error", err)
+			slog.Error("nats disconnected", "error", err)
 		}),
 		nats.ReconnectHandler(func(conn *nats.Conn) {
-			// 记录服务器URL，便于调试
 			serverURL := ""
 			if conn.ConnectedUrl() != "" {
 				serverURL = conn.ConnectedUrl()
@@ -97,29 +94,24 @@ func New(cfg Config) (*NatsBus, error) {
 				slog.Error("nats connection error", "error", err)
 			}
 		}),
-		// 添加重试逻辑，减少连接失败的可能性
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(cfg.MaxReconnects),
-		// 设置Ping间隔以检测连接状态
 		nats.PingInterval(20 * time.Second),
 		nats.MaxPingsOutstanding(5),
 	}
 
-	// 连接到NATS服务器
-	// 使用配置中的URLs，如果为空则使用默认URL
 	serverURL := nats.DefaultURL
 	if len(cfg.URLs) > 0 {
 		// 对于多个URL，NATS客户端会自动尝试连接到其中任何一个
 		serverURL = strings.Join(cfg.URLs, ",")
 	}
 
-	slog.Info("connecting to nats", "urls", cfg.URLs)
+	slog.Debug("connecting to nats", "urls", cfg.URLs)
 	nc, err := nats.Connect(serverURL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
-	// 创建并初始化NatsBus实例
 	nb := &NatsBus{
 		conn:      nc,
 		cfg:       cfg,
@@ -127,7 +119,6 @@ func New(cfg Config) (*NatsBus, error) {
 		stopChans: make(map[string]chan struct{}),
 	}
 
-	// 如果配置了使用JetStream，初始化JetStream上下文
 	if cfg.UseJetStream {
 		if err := nb.setupJetStream(); err != nil {
 			// 关闭连接并返回错误
@@ -138,7 +129,7 @@ func New(cfg Config) (*NatsBus, error) {
 
 	connectedUrl := nc.ConnectedUrl()
 	if connectedUrl == "" {
-		connectedUrl = "unknown"
+		return nil, errors.New("nats connection failed, no connected URL")
 	}
 	slog.Info("connected to nats",
 		"server", connectedUrl,

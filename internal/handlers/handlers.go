@@ -62,21 +62,14 @@ func handlePing(ctx context.Context, client *hub.Client, data json.RawMessage) e
 		RTT:       now - pingData.Timestamp,
 	}
 
-	// 创建响应消息
 	pongMsg, err := hub.NewMessage(0, "pong", pongData)
-	if err != nil {
-		return err
-	}
-
-	// 编码并发送
-	respData, err := pongMsg.Encode()
 	if err != nil {
 		return err
 	}
 
 	return client.Send(hub.Frame{
 		MsgType: 1,
-		Data:    respData,
+		Data:    pongMsg.Encode(),
 	})
 }
 
@@ -106,7 +99,7 @@ func handleJoinRoom(ctx context.Context, client *hub.Client, data json.RawMessag
 	}
 
 	// 加入房间
-	if err := h.JoinRoom(joinRequest.RoomID, client.ID()); err != nil {
+	if err := h.JoinRoom(joinRequest.RoomID, client.GetID()); err != nil {
 		// 处理错误
 		code := hub.MapErrorToCode(err)
 		return hub.SendError(client, hub.NewError(code, err.Error(), 0, nil))
@@ -118,10 +111,9 @@ func handleJoinRoom(ctx context.Context, client *hub.Client, data json.RawMessag
 		"status":  "joined",
 	})
 
-	respData, _ := successMsg.Encode()
 	return client.Send(hub.Frame{
 		MsgType: 1,
-		Data:    respData,
+		Data:    successMsg.Encode(),
 	})
 }
 
@@ -144,7 +136,7 @@ func handleLeaveRoom(ctx context.Context, client *hub.Client, data json.RawMessa
 	}
 
 	// 离开房间
-	if err := h.LeaveRoom(leaveRequest.RoomID, client.ID()); err != nil {
+	if err := h.LeaveRoom(leaveRequest.RoomID, client.GetID()); err != nil {
 		// 处理错误
 		code := hub.MapErrorToCode(err)
 		return hub.SendError(client, hub.NewError(code, err.Error(), 0, nil))
@@ -156,10 +148,9 @@ func handleLeaveRoom(ctx context.Context, client *hub.Client, data json.RawMessa
 		"status":  "left",
 	})
 
-	respData, _ := successMsg.Encode()
 	return client.Send(hub.Frame{
 		MsgType: 1,
-		Data:    respData,
+		Data:    successMsg.Encode(),
 	})
 }
 
@@ -192,28 +183,22 @@ func handleRoomMessage(ctx context.Context, client *hub.Client, data json.RawMes
 	roomMsg, err := hub.NewMessage(0, "room_message", map[string]interface{}{
 		"room_id":   roomMsgRequest.RoomID,
 		"content":   roomMsgRequest.Content,
-		"sender_id": client.ID(),
+		"sender_id": client.GetID(),
 		"timestamp": time.Now().UnixNano() / int64(time.Millisecond),
 	})
 	if err != nil {
 		return err
 	}
 
-	// 编码并广播
-	msgData, err := roomMsg.Encode()
-	if err != nil {
-		return err
-	}
-
 	// 记录指标
-	metrics.MessageSent(float64(len(msgData)))
+	metrics.MessageSent(float64(len(roomMsg.Encode())))
 	metrics.RoomMessageSent()
 
 	// 广播消息到房间（排除发送者）
 	return h.BroadcastToRoom(roomMsgRequest.RoomID, hub.Frame{
 		MsgType: 1,
-		Data:    msgData,
-	}, client.ID())
+		Data:    roomMsg.Encode(),
+	}, client.GetID())
 }
 
 // 处理私信
@@ -244,27 +229,21 @@ func handleDirectMessage(ctx context.Context, client *hub.Client, data json.RawM
 	// 构造私信消息
 	directMsg, err := hub.NewMessage(0, "direct_message", map[string]interface{}{
 		"content":   dmRequest.Content,
-		"sender_id": client.ID(),
+		"sender_id": client.GetID(),
 		"timestamp": time.Now().UnixNano() / int64(time.Millisecond),
 	})
 	if err != nil {
 		return err
 	}
 
-	// 编码并发送
-	msgData, err := directMsg.Encode()
-	if err != nil {
-		return err
-	}
-
 	// 记录指标
-	metrics.MessageSent(float64(len(msgData)))
+	metrics.MessageSent(float64(len(directMsg.Encode())))
 
 	// 发送消息到目标客户端
 	if err := h.
 		Push(dmRequest.TargetID, hub.Frame{
 			MsgType: 1,
-			Data:    msgData,
+			Data:    directMsg.Encode(),
 		}); err != nil {
 		// 处理错误
 		code := hub.MapErrorToCode(err)
