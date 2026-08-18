@@ -1,3 +1,5 @@
+
+
 # GoHub - 高性能分布式 Go WebSocket 框架
 
 [![Go 版本](https://img.shields.io/badge/go%20version-%3E%3D1.20-6F93CF.svg)](https://golang.org/dl/)
@@ -138,7 +140,7 @@ srv, err := server.NewServer(&server.Options{
 	EnableCluster: true,
 	BusType:       "redis",
 	RedisConfig: &redis.Config{
-		Addr:     "localhost:6379",
+		Addrs:    []string{"localhost:6379"},
 		Password: "",
 		DB:       0,
 	},
